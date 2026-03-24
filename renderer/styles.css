@@ -496,6 +496,47 @@ body {
 }
 .ai-action-btn:hover { background: #7c3aed44; }
 
+.ai-instructions {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ai-instr-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.ai-instr-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 11px;
+}
+
+.ai-instr-item .text {
+  flex: 1;
+  color: var(--fg);
+  line-height: 1.4;
+}
+
+.ai-instr-item.disabled .text {
+  color: var(--fg2);
+  text-decoration: line-through;
+}
+
+.ai-instr-item button {
+  background: none;
+  border: none;
+  color: var(--fg2);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0 2px;
+}
+
+.ai-instr-item button:hover { color: var(--danger); }
+
 .ai-messages {
   flex: 1;
   overflow-y: auto;

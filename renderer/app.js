@@ -423,10 +423,8 @@ async function openSettings() {
   const aiKey = await gideon.aiGetKey();
   $("#cfgApiKey").value = aiKey || "";
   const smsCfg = await gideon.smsGetConfig();
-  $("#cfgTwilioSid").value = smsCfg.twilioSid || "";
-  $("#cfgTwilioToken").value = smsCfg.twilioToken || "";
-  $("#cfgTwilioFrom").value = smsCfg.twilioFrom || "";
   $("#cfgSmsTo").value = smsCfg.smsTo || "";
+  $("#cfgSmsCarrier").value = smsCfg.smsCarrier || "rogers";
   $("#cfgSmsResult").textContent = "";
   $("#cfgTestResult").textContent = "";
   $("#settingsModal").style.display = "flex";
@@ -466,10 +464,8 @@ async function saveSettingsQuiet() {
   const apiKey = $("#cfgApiKey").value.trim();
   if (apiKey) await gideon.aiSaveKey(apiKey);
   await gideon.smsSaveConfig({
-    twilioSid: $("#cfgTwilioSid").value.trim(),
-    twilioToken: $("#cfgTwilioToken").value.trim(),
-    twilioFrom: $("#cfgTwilioFrom").value.trim(),
     smsTo: $("#cfgSmsTo").value.trim(),
+    smsCarrier: $("#cfgSmsCarrier").value,
   });
 }
 
@@ -547,8 +543,67 @@ async function aiSendChat() {
   else addAIMessage(result.text, "assistant");
 }
 
+// ── Standing Instructions ────────────────────────────────────────────────────
+let instrVisible = false;
+
+async function renderInstructions() {
+  const list = await gideon.instructionsGet();
+  const container = $("#aiInstrList");
+  container.innerHTML = "";
+
+  if (!list.length) {
+    container.innerHTML = '<div style="font-size:10px;color:var(--fg2);padding:4px 0">No instructions yet. Type one below and press Enter.</div>';
+  }
+
+  for (const item of list) {
+    const row = document.createElement("div");
+    row.className = "ai-instr-item" + (item.enabled ? "" : " disabled");
+
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = item.enabled;
+    toggle.addEventListener("change", async () => {
+      await gideon.instructionsToggle(item.id);
+      renderInstructions();
+    });
+
+    const text = document.createElement("span");
+    text.className = "text";
+    text.textContent = item.text;
+
+    const del = document.createElement("button");
+    del.textContent = "\u00d7";
+    del.title = "Remove";
+    del.addEventListener("click", async () => {
+      await gideon.instructionsRemove(item.id);
+      renderInstructions();
+    });
+
+    row.appendChild(toggle);
+    row.appendChild(text);
+    row.appendChild(del);
+    container.appendChild(row);
+  }
+}
+
+async function addInstruction(text) {
+  if (!text.trim()) return;
+  await gideon.instructionsAdd(text.trim());
+  $("#aiInstrInput").value = "";
+  renderInstructions();
+
+  // AI confirms understanding
+  addAIMessage(`New instruction: "${text.trim()}"`, "user");
+  const result = await gideon.aiChat(
+    `I just added this standing instruction for you to follow when checking my emails: "${text.trim()}". Confirm you understand in one sentence, and explain briefly how you'll apply it.`,
+    null
+  );
+  if (result.error) addAIMessage("Error: " + result.error, "error");
+  else addAIMessage(result.text, "assistant");
+}
+
 function bindAIEvents() {
-  $("#btnAI").addEventListener("click", toggleAI);
+  $("#btnAI").addEventListener("click", () => { toggleAI(); renderInstructions(); });
   $("#aiClose").addEventListener("click", toggleAI);
   $("#aiTriage").addEventListener("click", aiTriageInbox);
   $("#aiAnalyze").addEventListener("click", aiAnalyzeCurrent);
@@ -556,6 +611,18 @@ function bindAIEvents() {
   $("#aiSend").addEventListener("click", aiSendChat);
   $("#aiInput").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); aiSendChat(); }
+  });
+
+  // Instructions
+  $("#aiInstrToggle").addEventListener("click", () => {
+    instrVisible = !instrVisible;
+    $("#aiInstrList").style.display = instrVisible ? "block" : "none";
+    $("#aiInstrAdd").style.display = instrVisible ? "block" : "none";
+    $("#aiInstrToggle").textContent = instrVisible ? "Hide" : "Show";
+    if (instrVisible) renderInstructions();
+  });
+  $("#aiInstrInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); addInstruction(e.target.value); }
   });
 }
 

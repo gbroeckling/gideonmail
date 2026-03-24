@@ -27,7 +27,6 @@
     "imapflow": "^1.2.16",
     "mailparser": "^3.9.5",
     "marked": "^17.0.5",
-    "nodemailer": "^8.0.3",
-    "twilio": "^5.13.1"
+    "nodemailer": "^8.0.3"
   }
 }

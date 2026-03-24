@@ -94,11 +94,18 @@
       <label>Anthropic API Key<input type="password" id="cfgApiKey" placeholder="sk-ant-..." /></label>
       <div style="padding:4px 20px"><button id="cfgAiVerify" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Verify API Key</button> <span id="cfgAiResult" style="font-size:11px"></span></div>
       <hr>
-      <div style="padding:6px 20px;font-size:11px;color:#a78bfa;font-weight:600">SMS Notifications (Twilio)</div>
-      <label>Twilio Account SID<input type="password" id="cfgTwilioSid" /></label>
-      <label>Twilio Auth Token<input type="password" id="cfgTwilioToken" /></label>
-      <label>Twilio From Number<input type="text" id="cfgTwilioFrom" placeholder="+1..." /></label>
-      <label>Your Phone Number<input type="text" id="cfgSmsTo" placeholder="+1..." /></label>
+      <div style="padding:6px 20px;font-size:11px;color:#a78bfa;font-weight:600">SMS Notifications (free via email-to-SMS)</div>
+      <label>Your Phone Number<input type="text" id="cfgSmsTo" placeholder="6135551234" /></label>
+      <label style="padding:6px 20px;font-size:12px;color:var(--fg2)">Carrier
+        <select id="cfgSmsCarrier" style="display:block;width:100%;margin-top:3px;padding:7px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:13px">
+          <option value="rogers">Rogers</option>
+          <option value="bell">Bell</option>
+          <option value="telus">Telus</option>
+          <option value="fido">Fido</option>
+          <option value="koodo">Koodo</option>
+          <option value="freedom">Freedom</option>
+        </select>
+      </label>
       <div style="padding:4px 20px"><button id="cfgSmsTest" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Send Test SMS</button> <span id="cfgSmsResult" style="font-size:11px"></span></div>
       <hr>
       <div class="settings-actions">
@@ -118,6 +125,16 @@
         <button id="aiAnalyze" class="ai-action-btn" title="Analyze current email">Analyze</button>
         <button id="aiDraft" class="ai-action-btn" title="Draft reply">Draft Reply</button>
         <button id="aiClose" class="icon-btn" style="font-size:14px">&times;</button>
+      </div>
+    </div>
+    <div id="aiInstructions" class="ai-instructions">
+      <div class="ai-instr-header">
+        <span style="font-size:11px;color:#94a3b8;font-weight:600">Standing Instructions</span>
+        <button id="aiInstrToggle" class="icon-btn" style="font-size:10px;padding:2px 6px">Show</button>
+      </div>
+      <div id="aiInstrList" style="display:none"></div>
+      <div id="aiInstrAdd" style="display:none;padding:4px 0">
+        <input type="text" id="aiInstrInput" placeholder="e.g. Always flag emails from my accountant" style="width:100%;padding:5px 8px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:11px;outline:none" />
       </div>
     </div>
     <div id="aiMessages" class="ai-messages"></div>

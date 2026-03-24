@@ -385,17 +385,46 @@ let idleActive = false;
 let lastSeenUids = new Set();
 
 async function sendSMS(message) {
-  const sid = store.get("twilio_sid");
-  const token = store.get("twilio_token");
-  const from = store.get("twilio_from");
-  const to = store.get("sms_to");
-  if (!sid || !token || !from || !to) return;
+  const phone = store.get("sms_to");
+  const carrier = store.get("sms_carrier") || "rogers";
+  if (!phone) return;
+
+  const gateways = {
+    rogers:   "pcs.rogers.com",
+    bell:     "txt.bell.ca",
+    telus:    "msg.telus.com",
+    fido:     "fido.ca",
+    koodo:    "msg.telus.com",
+    freedom:  "txt.freedommobile.ca",
+  };
+
+  const gateway = gateways[carrier];
+  if (!gateway) { console.error("Unknown carrier:", carrier); return; }
+
+  // Strip everything except digits from phone number
+  const digits = phone.replace(/\D/g, "").replace(/^1/, ""); // remove country code
+  const smsEmail = `${digits}@${gateway}`;
+
+  const cfg = store.get("account");
+  if (!cfg) return;
 
   try {
-    const twilio = require("twilio")(sid, token);
-    await twilio.messages.create({ body: message.substring(0, 1600), from, to });
+    const transport = nodemailer.createTransport({
+      host: cfg.smtpHost,
+      port: cfg.smtpPort || 587,
+      secure: cfg.smtpSecure || false,
+      auth: { user: cfg.username, pass: cfg.password },
+      tls: { rejectUnauthorized: false },
+    });
+
+    await transport.sendMail({
+      from: cfg.email || cfg.username,
+      to: smsEmail,
+      subject: "",
+      text: message.substring(0, 160), // SMS length limit
+    });
   } catch (e) {
-    console.error("SMS failed:", e.message);
+    console.error("SMS via email failed:", e.message);
   }
 }
 
@@ -438,7 +467,7 @@ async function autoTriageNewMail(messages) {
 For each email, respond with ONLY "URGENT" or "SKIP" followed by a 5-word reason.
 URGENT means: needs action within hours, from a real person about something important.
 SKIP means: marketing, newsletter, automated notification, spam, or can wait.
-Be very selective — only flag truly urgent emails.`,
+Be very selective — only flag truly urgent emails.${getInstructionsBlock()}`,
       messages: [{ role: "user", content: emailList }],
     });
 
@@ -617,9 +646,16 @@ function getAnthropicClient() {
   return anthropicClient;
 }
 
+function getInstructionsBlock() {
+  const list = (store.get("ai_instructions") || []).filter((i) => i.enabled);
+  if (!list.length) return "";
+  return "\n\nSTANDING INSTRUCTIONS (always follow these):\n" + list.map((i, n) => `${n + 1}. ${i.text}`).join("\n");
+}
+
 async function aiTriage(messages) {
   const client = getAnthropicClient();
   const account = store.get("account") || {};
+  const instructions = getInstructionsBlock();
 
   const emailSummaries = messages.slice(0, 20).map((m, i) => {
     const from = m.from?.name || m.from?.address || "Unknown";
@@ -634,7 +670,7 @@ async function aiTriage(messages) {
 Triage incoming emails: categorize by priority (urgent, normal, low),
 flag spam/marketing, and suggest quick actions (reply, archive, delete, flag).
 Be concise — one line per email with your recommendation.
-Use format: [#] PRIORITY | Action — Brief reason`,
+Use format: [#] PRIORITY | Action — Brief reason${instructions}`,
     messages: [{ role: "user", content: `Here are my latest emails:\n\n${emailSummaries}\n\nTriage these for me.` }],
   });
 
@@ -656,7 +692,7 @@ Analyze this email and provide:
 2. Priority (urgent/normal/low)
 3. Suggested action (reply/archive/delete/flag/forward)
 4. If reply is suggested, draft a brief response
-Be concise and professional.`,
+Be concise and professional.${getInstructionsBlock()}`,
     messages: [{ role: "user", content: `From: ${email.from?.name || ""} <${email.from?.address || ""}>\nTo: ${(email.to || []).map(t => t.address).join(", ")}\nDate: ${email.date}\nSubject: ${email.subject}\n\n${content}` }],
   });
 
@@ -736,18 +772,14 @@ ipcMain.handle("ai-verify-key", async () => {
 
 ipcMain.handle("sms-get-config", () => {
   return {
-    twilioSid: store.get("twilio_sid") ? "••••••••" : "",
-    twilioToken: store.get("twilio_token") ? "••••••••" : "",
-    twilioFrom: store.get("twilio_from") || "",
     smsTo: store.get("sms_to") || "",
+    smsCarrier: store.get("sms_carrier") || "rogers",
   };
 });
 
 ipcMain.handle("sms-save-config", (_, cfg) => {
-  if (cfg.twilioSid && cfg.twilioSid !== "••••••••") store.set("twilio_sid", cfg.twilioSid);
-  if (cfg.twilioToken && cfg.twilioToken !== "••••••••") store.set("twilio_token", cfg.twilioToken);
-  if (cfg.twilioFrom) store.set("twilio_from", cfg.twilioFrom);
   if (cfg.smsTo) store.set("sms_to", cfg.smsTo);
+  if (cfg.smsCarrier) store.set("sms_carrier", cfg.smsCarrier);
   return { ok: true };
 });
 
@@ -781,6 +813,33 @@ ipcMain.handle("ai-chat", async (_, message, emailContext) => {
 ipcMain.handle("ai-clear-history", () => {
   conversationHistory = [];
   return { ok: true };
+});
+
+// ── Standing Instructions ───────────────────────────────────────────────────
+ipcMain.handle("instructions-get", () => {
+  return store.get("ai_instructions") || [];
+});
+
+ipcMain.handle("instructions-add", (_, text) => {
+  const list = store.get("ai_instructions") || [];
+  list.push({ id: Date.now().toString(), text, enabled: true, created: new Date().toISOString() });
+  store.set("ai_instructions", list);
+  return list;
+});
+
+ipcMain.handle("instructions-remove", (_, id) => {
+  let list = store.get("ai_instructions") || [];
+  list = list.filter((i) => i.id !== id);
+  store.set("ai_instructions", list);
+  return list;
+});
+
+ipcMain.handle("instructions-toggle", (_, id) => {
+  const list = store.get("ai_instructions") || [];
+  const item = list.find((i) => i.id === id);
+  if (item) item.enabled = !item.enabled;
+  store.set("ai_instructions", list);
+  return list;
 });
 
 // ── App lifecycle ───────────────────────────────────────────────────────────
