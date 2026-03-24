@@ -32,6 +32,23 @@ function createWindow() {
 
   mainWindow.loadFile("renderer/index.html");
 
+  // Open links in the system browser instead of inside Electron
+  const { shell } = require("electron");
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("mailto:")) {
+      shell.openExternal(url);
+    }
+    return { action: "deny" };
+  });
+  mainWindow.webContents.on("will-navigate", (e, url) => {
+    if (url !== mainWindow.webContents.getURL()) {
+      e.preventDefault();
+      if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("mailto:")) {
+        shell.openExternal(url);
+      }
+    }
+  });
+
   mainWindow.on("close", (e) => {
     if (!app.isQuitting) {
       e.preventDefault();

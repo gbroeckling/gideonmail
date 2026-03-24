@@ -214,11 +214,20 @@ async function openMessage(uid) {
     <html><head><style>
       body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; color: #1e293b; padding: 16px; line-height: 1.6; }
       img { max-width: 100%; height: auto; }
-      a { color: #2563eb; }
+      a { color: #2563eb; cursor: pointer; }
       blockquote { border-left: 3px solid #cbd5e1; margin: 8px 0; padding: 4px 12px; color: #64748b; }
     </style></head><body>${html}</body></html>
   `);
   doc.close();
+
+  // Make links open in system browser
+  doc.addEventListener("click", (e) => {
+    const link = e.target.closest("a");
+    if (link && link.href && (link.href.startsWith("http://") || link.href.startsWith("https://") || link.href.startsWith("mailto:"))) {
+      e.preventDefault();
+      window.open(link.href);
+    }
+  });
 }
 
 async function deleteCurrent() {
