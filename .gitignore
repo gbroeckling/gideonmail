@@ -1,0 +1,7 @@
+node_modules/
+dist/
+out/
+*.tmp
+.DS_Store
+Thumbs.db
+.claude/

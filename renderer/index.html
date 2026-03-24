@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: cid: https:; script-src 'self' 'unsafe-inline'">
+  <title>GideonMail</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <nav id="sidebar">
+      <div class="logo">GideonMail</div>
+      <button id="btnCompose" class="compose-btn">Compose</button>
+      <div id="folderList" class="folder-list"></div>
+      <div class="sidebar-footer">
+        <button id="btnSettings" class="icon-btn" title="Settings">&#9881;</button>
+        <button id="btnRefresh" class="icon-btn" title="Refresh">&#8635;</button>
+      </div>
+    </nav>
+    <main id="content">
+      <div id="listPane">
+        <div class="list-toolbar">
+          <input type="text" id="searchInput" placeholder="Search mail..." />
+        </div>
+        <div id="messageList" class="message-list"></div>
+        <div id="listFooter" class="list-footer">
+          <button id="btnPrev" disabled>&laquo; Newer</button>
+          <span id="pageInfo"></span>
+          <button id="btnNext">Older &raquo;</button>
+        </div>
+      </div>
+      <div id="readPane">
+        <div id="readPlaceholder" class="placeholder">Select a message to read</div>
+        <div id="readContent" class="read-content" style="display:none">
+          <div id="readHeader" class="read-header"></div>
+          <div id="readActions" class="read-actions">
+            <button id="btnReply">Reply</button>
+            <button id="btnReplyAll">Reply All</button>
+            <button id="btnForward">Forward</button>
+            <button id="btnDelete" class="danger">Delete</button>
+            <button id="btnStar" title="Star">&#9734;</button>
+          </div>
+          <div id="readAttachments" class="attachments"></div>
+          <iframe id="readBody" sandbox="allow-same-origin" class="read-body"></iframe>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Compose modal -->
+  <div id="composeModal" class="modal" style="display:none">
+    <div class="modal-content compose-form">
+      <div class="modal-header">
+        <span id="composeTitle">New Message</span>
+        <button id="composeClose" class="icon-btn">&times;</button>
+      </div>
+      <input type="text" id="composeTo" placeholder="To" />
+      <input type="text" id="composeCc" placeholder="Cc" />
+      <input type="text" id="composeSubject" placeholder="Subject" />
+      <div id="composeEditor" contenteditable="true" class="compose-editor"></div>
+      <div class="compose-toolbar">
+        <label class="attach-btn">
+          &#128206; Attach
+          <input type="file" id="composeAttach" multiple style="display:none" />
+        </label>
+        <div id="composeAttachList" class="attach-list"></div>
+        <button id="composeSend" class="send-btn">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settingsModal" class="modal" style="display:none">
+    <div class="modal-content settings-form">
+      <div class="modal-header">
+        <span>Account Settings</span>
+        <button id="settingsClose" class="icon-btn">&times;</button>
+      </div>
+      <label>Display Name<input type="text" id="cfgDisplayName" /></label>
+      <label>Email Address<input type="email" id="cfgEmail" /></label>
+      <label>Username<input type="text" id="cfgUsername" /></label>
+      <label>Password<input type="password" id="cfgPassword" /></label>
+      <hr>
+      <label>IMAP Host<input type="text" id="cfgImapHost" placeholder="mail.example.com" /></label>
+      <label>IMAP Port<input type="number" id="cfgImapPort" value="993" /></label>
+      <label><input type="checkbox" id="cfgImapSecure" checked /> Use SSL/TLS (IMAP)</label>
+      <hr>
+      <label>SMTP Host<input type="text" id="cfgSmtpHost" placeholder="mail.example.com" /></label>
+      <label>SMTP Port<input type="number" id="cfgSmtpPort" value="587" /></label>
+      <label><input type="checkbox" id="cfgSmtpSecure" /> Use SSL/TLS (SMTP)</label>
+      <hr>
+      <div class="settings-actions">
+        <button id="cfgTest">Test Connection</button>
+        <span id="cfgTestResult"></span>
+        <button id="cfgSave" class="send-btn">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

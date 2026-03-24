@@ -1,0 +1,471 @@
+// GideonMail — Renderer
+// Single-account IMAP/SMTP email client
+
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+let currentFolder = "INBOX";
+let currentPage = 0;
+let currentMessages = [];
+let currentUid = null;
+let currentMsg = null;
+let composeAttachments = [];
+let composeMode = null; // null | "new" | "reply" | "replyall" | "forward"
+
+// ── Init ────────────────────────────────────────────────────────────────────
+async function init() {
+  const account = await gideon.getAccount();
+  if (!account) {
+    openSettings();
+    return;
+  }
+
+  await loadFolders();
+  await loadMessages();
+  bindEvents();
+}
+
+function bindEvents() {
+  $("#btnCompose").addEventListener("click", () => openCompose("new"));
+  $("#btnSettings").addEventListener("click", openSettings);
+  $("#btnRefresh").addEventListener("click", () => loadMessages());
+  $("#btnPrev").addEventListener("click", () => { if (currentPage > 0) { currentPage--; loadMessages(); } });
+  $("#btnNext").addEventListener("click", () => { currentPage++; loadMessages(); });
+
+  // Search
+  let searchTimer;
+  $("#searchInput").addEventListener("input", (e) => {
+    clearTimeout(searchTimer);
+    const q = e.target.value.trim();
+    searchTimer = setTimeout(() => {
+      if (q.length >= 2) searchMail(q);
+      else loadMessages();
+    }, 400);
+  });
+
+  // Read pane actions
+  $("#btnReply").addEventListener("click", () => openCompose("reply"));
+  $("#btnReplyAll").addEventListener("click", () => openCompose("replyall"));
+  $("#btnForward").addEventListener("click", () => openCompose("forward"));
+  $("#btnDelete").addEventListener("click", deleteCurrent);
+  $("#btnStar").addEventListener("click", starCurrent);
+
+  // Compose
+  $("#composeClose").addEventListener("click", closeCompose);
+  $("#composeSend").addEventListener("click", sendCompose);
+  $("#composeAttach").addEventListener("change", handleAttachFiles);
+
+  // Settings
+  $("#settingsClose").addEventListener("click", () => { $("#settingsModal").style.display = "none"; });
+  $("#cfgTest").addEventListener("click", testConnection);
+  $("#cfgSave").addEventListener("click", saveSettings);
+
+  // Push updates
+  gideon.onInboxUpdated((data) => {
+    if (data && !data.error && currentFolder === "INBOX") {
+      currentMessages = data.messages || [];
+      renderMessageList();
+    }
+  });
+}
+
+// ── Folders ─────────────────────────────────────────────────────────────────
+async function loadFolders() {
+  const folders = await gideon.listFolders();
+  if (folders.error) return;
+
+  const list = $("#folderList");
+  list.innerHTML = "";
+
+  // Preferred order
+  const priority = ["INBOX", "Sent", "Drafts", "Trash", "Junk", "Spam", "Archive"];
+  const sorted = [...folders].sort((a, b) => {
+    const ai = priority.findIndex((p) => a.path.toUpperCase().includes(p.toUpperCase()));
+    const bi = priority.findIndex((p) => b.path.toUpperCase().includes(p.toUpperCase()));
+    if (ai >= 0 && bi >= 0) return ai - bi;
+    if (ai >= 0) return -1;
+    if (bi >= 0) return 1;
+    return a.path.localeCompare(b.path);
+  });
+
+  for (const f of sorted) {
+    const div = document.createElement("div");
+    div.className = "folder-item" + (f.path === currentFolder ? " active" : "");
+    div.innerHTML = `<span>${escHtml(f.name)}</span>`;
+    div.addEventListener("click", () => {
+      currentFolder = f.path;
+      currentPage = 0;
+      loadMessages();
+      loadFolders();
+    });
+    list.appendChild(div);
+  }
+}
+
+// ── Message list ────────────────────────────────────────────────────────────
+async function loadMessages() {
+  const result = currentFolder === "INBOX"
+    ? await gideon.fetchInbox(currentPage)
+    : await gideon.fetchFolder(currentFolder, currentPage);
+
+  if (result.error) {
+    $("#messageList").innerHTML = `<div class="placeholder" style="font-size:12px;color:#ef4444">${escHtml(result.error)}</div>`;
+    return;
+  }
+
+  currentMessages = result.messages || [];
+  const total = result.total || 0;
+
+  renderMessageList();
+
+  // Pagination
+  $("#btnPrev").disabled = currentPage === 0;
+  $("#btnNext").disabled = (currentPage + 1) * 50 >= total;
+  $("#pageInfo").textContent = total > 0 ? `${currentPage * 50 + 1}–${Math.min((currentPage + 1) * 50, total)} of ${total}` : "Empty";
+}
+
+function renderMessageList() {
+  const list = $("#messageList");
+  list.innerHTML = "";
+
+  for (const m of currentMessages) {
+    const div = document.createElement("div");
+    div.className = "msg-row" + (!m.seen ? " unread" : "") + (m.uid === currentUid ? " active" : "");
+    div.innerHTML = `
+      <div class="msg-top">
+        <span class="msg-from">${escHtml(m.from?.name || m.from?.address || "Unknown")}</span>
+        <span class="msg-date">${formatDate(m.date)}</span>
+      </div>
+      <div class="msg-subject">${escHtml(m.subject)}</div>
+      <div class="msg-icons">
+        ${m.flagged ? '<span class="star">&#9733;</span>' : ""}
+        ${m.hasAttachments ? '<span class="clip">&#128206;</span>' : ""}
+      </div>
+    `;
+    div.addEventListener("click", () => openMessage(m.uid));
+    list.appendChild(div);
+  }
+}
+
+// ── Read message ────────────────────────────────────────────────────────────
+async function openMessage(uid) {
+  currentUid = uid;
+  renderMessageList(); // highlight active
+
+  $("#readPlaceholder").style.display = "none";
+  $("#readContent").style.display = "flex";
+  $("#readHeader").innerHTML = `<div style="color:var(--fg2);font-size:12px">Loading...</div>`;
+
+  const msg = await gideon.fetchMessage(uid);
+  if (msg.error) {
+    $("#readHeader").innerHTML = `<div style="color:var(--danger)">${escHtml(msg.error)}</div>`;
+    return;
+  }
+
+  currentMsg = msg;
+
+  // Mark as read in list
+  const listMsg = currentMessages.find((m) => m.uid === uid);
+  if (listMsg) { listMsg.seen = true; renderMessageList(); }
+
+  // Header
+  $("#readHeader").innerHTML = `
+    <h2>${escHtml(msg.subject)}</h2>
+    <div class="meta">
+      <strong>${escHtml(msg.from?.name || msg.from?.address || "")}</strong>
+      &lt;${escHtml(msg.from?.address || "")}&gt;<br>
+      To: ${(msg.to || []).map((t) => escHtml(t.name || t.address)).join(", ")}
+      ${msg.cc?.length ? "<br>Cc: " + msg.cc.map((t) => escHtml(t.name || t.address)).join(", ") : ""}
+      <br>${formatDateFull(msg.date)}
+    </div>
+  `;
+
+  // Star button
+  const starred = currentMessages.find((m) => m.uid === uid)?.flagged;
+  $("#btnStar").innerHTML = starred ? "&#9733;" : "&#9734;";
+  $("#btnStar").style.color = starred ? "#fbbf24" : "";
+
+  // Attachments
+  const attDiv = $("#readAttachments");
+  attDiv.innerHTML = "";
+  for (const a of msg.attachments || []) {
+    const chip = document.createElement("div");
+    chip.className = "att-chip";
+    chip.textContent = `${a.filename} (${formatSize(a.size)})`;
+    chip.addEventListener("click", () => downloadAttachment(uid, a.filename));
+    attDiv.appendChild(chip);
+  }
+
+  // Body (sandboxed iframe)
+  const iframe = $("#readBody");
+  const html = msg.html || `<pre style="font-family:inherit;white-space:pre-wrap">${escHtml(msg.text || "")}</pre>`;
+  const doc = iframe.contentDocument || iframe.contentWindow.document;
+  doc.open();
+  doc.write(`
+    <html><head><style>
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; color: #1e293b; padding: 16px; line-height: 1.6; }
+      img { max-width: 100%; height: auto; }
+      a { color: #2563eb; }
+      blockquote { border-left: 3px solid #cbd5e1; margin: 8px 0; padding: 4px 12px; color: #64748b; }
+    </style></head><body>${html}</body></html>
+  `);
+  doc.close();
+}
+
+async function deleteCurrent() {
+  if (!currentUid) return;
+  if (!confirm("Delete this message?")) return;
+
+  const result = await gideon.deleteMessage(currentUid);
+  if (result.ok) {
+    currentUid = null;
+    currentMsg = null;
+    $("#readContent").style.display = "none";
+    $("#readPlaceholder").style.display = "flex";
+    loadMessages();
+  }
+}
+
+async function starCurrent() {
+  if (!currentUid) return;
+  await gideon.toggleFlag(currentUid, "flagged");
+  const m = currentMessages.find((m) => m.uid === currentUid);
+  if (m) m.flagged = !m.flagged;
+  renderMessageList();
+  $("#btnStar").innerHTML = m?.flagged ? "&#9733;" : "&#9734;";
+  $("#btnStar").style.color = m?.flagged ? "#fbbf24" : "";
+}
+
+async function downloadAttachment(uid, filename) {
+  const result = await gideon.fetchAttachment(uid, filename);
+  if (result.error) { alert(result.error); return; }
+
+  const blob = new Blob([Uint8Array.from(atob(result.data), (c) => c.charCodeAt(0))], { type: result.contentType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = result.filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Search ──────────────────────────────────────────────────────────────────
+async function searchMail(query) {
+  const result = await gideon.searchMessages(query);
+  if (result.error) return;
+  currentMessages = result.messages || [];
+  renderMessageList();
+  $("#pageInfo").textContent = `${currentMessages.length} results`;
+  $("#btnPrev").disabled = true;
+  $("#btnNext").disabled = true;
+}
+
+// ── Compose ─────────────────────────────────────────────────────────────────
+function openCompose(mode) {
+  composeMode = mode;
+  composeAttachments = [];
+  $("#composeAttachList").innerHTML = "";
+  $("#composeModal").style.display = "flex";
+
+  if (mode === "new") {
+    $("#composeTitle").textContent = "New Message";
+    $("#composeTo").value = "";
+    $("#composeCc").value = "";
+    $("#composeSubject").value = "";
+    $("#composeEditor").innerHTML = "";
+  } else if (mode === "reply" && currentMsg) {
+    $("#composeTitle").textContent = "Reply";
+    $("#composeTo").value = currentMsg.from?.address || "";
+    $("#composeCc").value = "";
+    $("#composeSubject").value = currentMsg.subject?.startsWith("Re:") ? currentMsg.subject : `Re: ${currentMsg.subject}`;
+    $("#composeEditor").innerHTML = `<br><br><blockquote style="border-left:3px solid #cbd5e1;padding-left:12px;color:#64748b">
+      On ${formatDateFull(currentMsg.date)}, ${escHtml(currentMsg.from?.name || currentMsg.from?.address || "")} wrote:<br>
+      ${currentMsg.html || escHtml(currentMsg.text || "")}
+    </blockquote>`;
+  } else if (mode === "replyall" && currentMsg) {
+    $("#composeTitle").textContent = "Reply All";
+    const allTo = [currentMsg.from, ...(currentMsg.to || []), ...(currentMsg.cc || [])]
+      .filter((t) => t?.address)
+      .map((t) => t.address);
+    const unique = [...new Set(allTo)];
+    $("#composeTo").value = currentMsg.from?.address || "";
+    $("#composeCc").value = unique.filter((a) => a !== currentMsg.from?.address).join(", ");
+    $("#composeSubject").value = currentMsg.subject?.startsWith("Re:") ? currentMsg.subject : `Re: ${currentMsg.subject}`;
+    $("#composeEditor").innerHTML = `<br><br><blockquote style="border-left:3px solid #cbd5e1;padding-left:12px;color:#64748b">
+      On ${formatDateFull(currentMsg.date)}, ${escHtml(currentMsg.from?.name || currentMsg.from?.address || "")} wrote:<br>
+      ${currentMsg.html || escHtml(currentMsg.text || "")}
+    </blockquote>`;
+  } else if (mode === "forward" && currentMsg) {
+    $("#composeTitle").textContent = "Forward";
+    $("#composeTo").value = "";
+    $("#composeCc").value = "";
+    $("#composeSubject").value = currentMsg.subject?.startsWith("Fwd:") ? currentMsg.subject : `Fwd: ${currentMsg.subject}`;
+    $("#composeEditor").innerHTML = `<br><br>---------- Forwarded message ----------<br>
+      From: ${escHtml(currentMsg.from?.name || "")} &lt;${escHtml(currentMsg.from?.address || "")}&gt;<br>
+      Date: ${formatDateFull(currentMsg.date)}<br>
+      Subject: ${escHtml(currentMsg.subject || "")}<br><br>
+      ${currentMsg.html || escHtml(currentMsg.text || "")}`;
+  }
+
+  $("#composeTo").focus();
+}
+
+function closeCompose() {
+  $("#composeModal").style.display = "none";
+  composeMode = null;
+  composeAttachments = [];
+}
+
+function handleAttachFiles(e) {
+  for (const file of e.target.files) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      composeAttachments.push({
+        filename: file.name,
+        contentType: file.type,
+        data: reader.result.split(",")[1], // base64
+      });
+      renderAttachList();
+    };
+    reader.readAsDataURL(file);
+  }
+  e.target.value = "";
+}
+
+function renderAttachList() {
+  const list = $("#composeAttachList");
+  list.innerHTML = "";
+  for (let i = 0; i < composeAttachments.length; i++) {
+    const span = document.createElement("span");
+    span.className = "att-chip";
+    span.textContent = composeAttachments[i].filename;
+    span.style.cursor = "pointer";
+    span.addEventListener("click", () => {
+      composeAttachments.splice(i, 1);
+      renderAttachList();
+    });
+    list.appendChild(span);
+  }
+}
+
+async function sendCompose() {
+  const to = $("#composeTo").value.trim();
+  if (!to) { alert("Enter a recipient"); return; }
+
+  $("#composeSend").disabled = true;
+  $("#composeSend").textContent = "Sending...";
+
+  const opts = {
+    to,
+    cc: $("#composeCc").value.trim() || undefined,
+    subject: $("#composeSubject").value.trim(),
+    html: $("#composeEditor").innerHTML,
+    text: $("#composeEditor").innerText,
+    attachments: composeAttachments.length ? composeAttachments : undefined,
+  };
+
+  if (composeMode === "reply" || composeMode === "replyall") {
+    opts.inReplyTo = currentMsg?.messageId;
+    opts.references = currentMsg?.references;
+  }
+
+  const result = await gideon.sendMail(opts);
+
+  $("#composeSend").disabled = false;
+  $("#composeSend").textContent = "Send";
+
+  if (result.error) {
+    alert("Send failed: " + result.error);
+  } else {
+    closeCompose();
+  }
+}
+
+// ── Settings ────────────────────────────────────────────────────────────────
+async function openSettings() {
+  const cfg = await gideon.getAccount() || {};
+  $("#cfgDisplayName").value = cfg.displayName || "";
+  $("#cfgEmail").value = cfg.email || "";
+  $("#cfgUsername").value = cfg.username || "";
+  $("#cfgPassword").value = cfg.password || "";
+  $("#cfgImapHost").value = cfg.imapHost || "";
+  $("#cfgImapPort").value = cfg.imapPort || 993;
+  $("#cfgImapSecure").checked = cfg.imapSecure !== false;
+  $("#cfgSmtpHost").value = cfg.smtpHost || "";
+  $("#cfgSmtpPort").value = cfg.smtpPort || 587;
+  $("#cfgSmtpSecure").checked = cfg.smtpSecure || false;
+  $("#cfgTestResult").textContent = "";
+  $("#settingsModal").style.display = "flex";
+}
+
+async function testConnection() {
+  $("#cfgTestResult").textContent = "Testing...";
+  $("#cfgTestResult").className = "";
+
+  // Save first so the test uses current values
+  await saveSettingsQuiet();
+
+  const result = await gideon.testConnection();
+  $("#cfgTestResult").textContent = result.message;
+  $("#cfgTestResult").className = result.ok ? "test-ok" : "test-fail";
+}
+
+async function saveSettingsQuiet() {
+  const cfg = {
+    displayName: $("#cfgDisplayName").value.trim(),
+    email: $("#cfgEmail").value.trim(),
+    username: $("#cfgUsername").value.trim(),
+    password: $("#cfgPassword").value,
+    imapHost: $("#cfgImapHost").value.trim(),
+    imapPort: parseInt($("#cfgImapPort").value) || 993,
+    imapSecure: $("#cfgImapSecure").checked,
+    smtpHost: $("#cfgSmtpHost").value.trim(),
+    smtpPort: parseInt($("#cfgSmtpPort").value) || 587,
+    smtpSecure: $("#cfgSmtpSecure").checked,
+  };
+  await gideon.saveAccount(cfg);
+}
+
+async function saveSettings() {
+  await saveSettingsQuiet();
+  $("#settingsModal").style.display = "none";
+  loadFolders();
+  loadMessages();
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+function escHtml(s) {
+  if (!s) return "";
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function formatDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) {
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  if (now.getFullYear() === d.getFullYear()) {
+    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+  return d.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+}
+
+function formatDateFull(iso) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleString([], {
+    weekday: "short", year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function formatSize(bytes) {
+  if (!bytes) return "";
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / 1048576).toFixed(1) + " MB";
+}
+
+// ── Boot ────────────────────────────────────────────────────────────────────
+init();

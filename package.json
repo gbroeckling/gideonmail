@@ -1,0 +1,25 @@
+{
+  "name": "gideonmail",
+  "version": "0.1.0",
+  "description": "A clean, fast, stable desktop email client for IMAP/SMTP",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --enable-logging"
+  },
+  "keywords": ["email", "imap", "smtp", "electron", "mail-client"],
+  "author": "Garry Broeckling",
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^41.0.3"
+  },
+  "dependencies": {
+    "dompurify": "^3.3.3",
+    "electron-store": "^11.0.2",
+    "imapflow": "^1.2.16",
+    "mailparser": "^3.9.5",
+    "marked": "^17.0.5",
+    "nodemailer": "^8.0.3"
+  }
+}
