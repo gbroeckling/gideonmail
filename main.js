@@ -720,6 +720,20 @@ ipcMain.handle("ai-save-key", (_, key) => {
   return { ok: true };
 });
 
+ipcMain.handle("ai-verify-key", async () => {
+  try {
+    const client = getAnthropicClient();
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-5-20250514",
+      max_tokens: 10,
+      messages: [{ role: "user", content: "Say OK" }],
+    });
+    return { ok: true, message: "API key verified" };
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
+});
+
 ipcMain.handle("sms-get-config", () => {
   return {
     twilioSid: store.get("twilio_sid") ? "••••••••" : "",

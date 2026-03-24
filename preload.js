@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld("gideon", {
   smsTest:       (msg)     => ipcRenderer.invoke("sms-test", msg),
 
   // AI Assistant
+  aiVerifyKey:   ()              => ipcRenderer.invoke("ai-verify-key"),
   aiGetKey:      ()              => ipcRenderer.invoke("ai-get-key"),
   aiSaveKey:     (key)           => ipcRenderer.invoke("ai-save-key", key),
   aiTriage:      (msgs)          => ipcRenderer.invoke("ai-triage", msgs),

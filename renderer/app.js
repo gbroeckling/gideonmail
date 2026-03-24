@@ -61,6 +61,14 @@ function bindEvents() {
   $("#settingsClose").addEventListener("click", () => { $("#settingsModal").style.display = "none"; });
   $("#cfgTest").addEventListener("click", testConnection);
   $("#cfgSave").addEventListener("click", saveSettings);
+  $("#cfgAiVerify").addEventListener("click", async () => {
+    $("#cfgAiResult").textContent = "Verifying...";
+    $("#cfgAiResult").style.color = "";
+    await saveSettingsQuiet();
+    const r = await gideon.aiVerifyKey();
+    $("#cfgAiResult").textContent = r.ok ? "Verified!" : "Failed: " + r.message;
+    $("#cfgAiResult").style.color = r.ok ? "var(--success)" : "var(--danger)";
+  });
   $("#cfgSmsTest").addEventListener("click", async () => {
     $("#cfgSmsResult").textContent = "Sending...";
     await saveSettingsQuiet();
