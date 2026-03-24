@@ -406,6 +406,8 @@ body {
 .settings-form {
   padding: 0;
   width: 480px;
+  max-height: 85vh;
+  overflow-y: auto;
 }
 .settings-form label {
   display: block;
