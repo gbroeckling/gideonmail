@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: cid: https:; script-src 'self' 'unsafe-inline'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://api.anthropic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: cid: https:; script-src 'self' 'unsafe-inline'">
   <title>GideonMail</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -14,6 +14,7 @@
       <button id="btnCompose" class="compose-btn">Compose</button>
       <div id="folderList" class="folder-list"></div>
       <div class="sidebar-footer">
+        <button id="btnAI" class="icon-btn" title="AI Assistant" style="color:#a78bfa">&#9733;</button>
         <button id="btnSettings" class="icon-btn" title="Settings">&#9881;</button>
         <button id="btnRefresh" class="icon-btn" title="Refresh">&#8635;</button>
       </div>
@@ -90,11 +91,38 @@
       <label>SMTP Port<input type="number" id="cfgSmtpPort" value="587" /></label>
       <label><input type="checkbox" id="cfgSmtpSecure" /> Use SSL/TLS (SMTP)</label>
       <hr>
+      <label>Anthropic API Key<input type="password" id="cfgApiKey" placeholder="sk-ant-..." /></label>
+      <hr>
+      <div style="padding:6px 20px;font-size:11px;color:#a78bfa;font-weight:600">SMS Notifications (Twilio)</div>
+      <label>Twilio Account SID<input type="password" id="cfgTwilioSid" /></label>
+      <label>Twilio Auth Token<input type="password" id="cfgTwilioToken" /></label>
+      <label>Twilio From Number<input type="text" id="cfgTwilioFrom" placeholder="+1..." /></label>
+      <label>Your Phone Number<input type="text" id="cfgSmsTo" placeholder="+1..." /></label>
+      <div style="padding:4px 20px"><button id="cfgSmsTest" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Send Test SMS</button> <span id="cfgSmsResult" style="font-size:11px"></span></div>
+      <hr>
       <div class="settings-actions">
         <button id="cfgTest">Test Connection</button>
         <span id="cfgTestResult"></span>
         <button id="cfgSave" class="send-btn">Save</button>
       </div>
+    </div>
+  </div>
+
+  <!-- AI Assistant panel -->
+  <div id="aiPanel" class="ai-panel" style="display:none">
+    <div class="ai-header">
+      <span style="font-weight:700;color:#a78bfa">AI Assistant</span>
+      <div style="display:flex;gap:6px">
+        <button id="aiTriage" class="ai-action-btn" title="Triage inbox">Triage</button>
+        <button id="aiAnalyze" class="ai-action-btn" title="Analyze current email">Analyze</button>
+        <button id="aiDraft" class="ai-action-btn" title="Draft reply">Draft Reply</button>
+        <button id="aiClose" class="icon-btn" style="font-size:14px">&times;</button>
+      </div>
+    </div>
+    <div id="aiMessages" class="ai-messages"></div>
+    <div class="ai-input-row">
+      <input type="text" id="aiInput" placeholder="Ask about this email or give instructions..." />
+      <button id="aiSend" class="send-btn" style="padding:6px 14px;font-size:12px">Send</button>
     </div>
   </div>
 

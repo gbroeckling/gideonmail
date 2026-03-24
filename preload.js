@@ -14,6 +14,20 @@ contextBridge.exposeInMainWorld("gideon", {
   fetchFolder:     (path, page) => ipcRenderer.invoke("fetch-folder", path, page),
   searchMessages:  (query)      => ipcRenderer.invoke("search-messages", query),
 
+  // SMS Notifications
+  smsGetConfig:  ()        => ipcRenderer.invoke("sms-get-config"),
+  smsSaveConfig: (cfg)     => ipcRenderer.invoke("sms-save-config", cfg),
+  smsTest:       (msg)     => ipcRenderer.invoke("sms-test", msg),
+
+  // AI Assistant
+  aiGetKey:      ()              => ipcRenderer.invoke("ai-get-key"),
+  aiSaveKey:     (key)           => ipcRenderer.invoke("ai-save-key", key),
+  aiTriage:      (msgs)          => ipcRenderer.invoke("ai-triage", msgs),
+  aiAnalyze:     (email)         => ipcRenderer.invoke("ai-analyze", email),
+  aiDraftReply:  (email, instr)  => ipcRenderer.invoke("ai-draft-reply", email, instr),
+  aiChat:        (msg, ctx)      => ipcRenderer.invoke("ai-chat", msg, ctx),
+  aiClearHistory:()              => ipcRenderer.invoke("ai-clear-history"),
+
   onInboxUpdated: (cb) => {
     ipcRenderer.on("inbox-updated", (_, data) => cb(data));
   },

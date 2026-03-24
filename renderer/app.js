@@ -14,6 +14,9 @@ let composeMode = null; // null | "new" | "reply" | "replyall" | "forward"
 
 // ── Init ────────────────────────────────────────────────────────────────────
 async function init() {
+  bindEvents();
+  bindAIEvents();
+
   const account = await gideon.getAccount();
   if (!account) {
     openSettings();
@@ -22,7 +25,6 @@ async function init() {
 
   await loadFolders();
   await loadMessages();
-  bindEvents();
 }
 
 function bindEvents() {
@@ -59,6 +61,13 @@ function bindEvents() {
   $("#settingsClose").addEventListener("click", () => { $("#settingsModal").style.display = "none"; });
   $("#cfgTest").addEventListener("click", testConnection);
   $("#cfgSave").addEventListener("click", saveSettings);
+  $("#cfgSmsTest").addEventListener("click", async () => {
+    $("#cfgSmsResult").textContent = "Sending...";
+    await saveSettingsQuiet();
+    const r = await gideon.smsTest();
+    $("#cfgSmsResult").textContent = r.ok ? "Sent!" : "Failed: " + r.error;
+    $("#cfgSmsResult").style.color = r.ok ? "var(--success)" : "var(--danger)";
+  });
 
   // Push updates
   gideon.onInboxUpdated((data) => {
@@ -394,6 +403,14 @@ async function openSettings() {
   $("#cfgSmtpHost").value = cfg.smtpHost || "";
   $("#cfgSmtpPort").value = cfg.smtpPort || 587;
   $("#cfgSmtpSecure").checked = cfg.smtpSecure || false;
+  const aiKey = await gideon.aiGetKey();
+  $("#cfgApiKey").value = aiKey || "";
+  const smsCfg = await gideon.smsGetConfig();
+  $("#cfgTwilioSid").value = smsCfg.twilioSid || "";
+  $("#cfgTwilioToken").value = smsCfg.twilioToken || "";
+  $("#cfgTwilioFrom").value = smsCfg.twilioFrom || "";
+  $("#cfgSmsTo").value = smsCfg.smsTo || "";
+  $("#cfgSmsResult").textContent = "";
   $("#cfgTestResult").textContent = "";
   $("#settingsModal").style.display = "flex";
 }
@@ -402,12 +419,17 @@ async function testConnection() {
   $("#cfgTestResult").textContent = "Testing...";
   $("#cfgTestResult").className = "";
 
-  // Save first so the test uses current values
-  await saveSettingsQuiet();
+  try {
+    // Save first so the test uses current values
+    await saveSettingsQuiet();
 
-  const result = await gideon.testConnection();
-  $("#cfgTestResult").textContent = result.message;
-  $("#cfgTestResult").className = result.ok ? "test-ok" : "test-fail";
+    const result = await gideon.testConnection();
+    $("#cfgTestResult").textContent = result.ok ? result.message : "Failed: " + result.message;
+    $("#cfgTestResult").className = result.ok ? "test-ok" : "test-fail";
+  } catch (e) {
+    $("#cfgTestResult").textContent = "Error: " + (e.message || e);
+    $("#cfgTestResult").className = "test-fail";
+  }
 }
 
 async function saveSettingsQuiet() {
@@ -424,6 +446,14 @@ async function saveSettingsQuiet() {
     smtpSecure: $("#cfgSmtpSecure").checked,
   };
   await gideon.saveAccount(cfg);
+  const apiKey = $("#cfgApiKey").value.trim();
+  if (apiKey) await gideon.aiSaveKey(apiKey);
+  await gideon.smsSaveConfig({
+    twilioSid: $("#cfgTwilioSid").value.trim(),
+    twilioToken: $("#cfgTwilioToken").value.trim(),
+    twilioFrom: $("#cfgTwilioFrom").value.trim(),
+    smsTo: $("#cfgSmsTo").value.trim(),
+  });
 }
 
 async function saveSettings() {
@@ -431,6 +461,85 @@ async function saveSettings() {
   $("#settingsModal").style.display = "none";
   loadFolders();
   loadMessages();
+}
+
+// ── AI Assistant ────────────────────────────────────────────────────────────
+let aiOpen = false;
+
+function toggleAI() {
+  aiOpen = !aiOpen;
+  $("#aiPanel").style.display = aiOpen ? "flex" : "none";
+}
+
+function addAIMessage(text, role) {
+  const div = document.createElement("div");
+  div.className = "ai-msg " + role;
+  div.textContent = text;
+  $("#aiMessages").appendChild(div);
+  $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
+}
+
+async function aiTriageInbox() {
+  if (!currentMessages.length) { addAIMessage("No messages to triage.", "error"); return; }
+  addAIMessage("Triaging inbox...", "system");
+  const result = await gideon.aiTriage(currentMessages);
+  if (result.error) addAIMessage("Error: " + result.error, "error");
+  else addAIMessage(result.text, "assistant");
+}
+
+async function aiAnalyzeCurrent() {
+  if (!currentMsg) { addAIMessage("Open an email first.", "error"); return; }
+  addAIMessage("Analyzing email...", "system");
+  const result = await gideon.aiAnalyze(currentMsg);
+  if (result.error) addAIMessage("Error: " + result.error, "error");
+  else addAIMessage(result.text, "assistant");
+}
+
+async function aiDraftReplyCurrent() {
+  if (!currentMsg) { addAIMessage("Open an email first.", "error"); return; }
+  addAIMessage("Drafting reply...", "system");
+  const result = await gideon.aiDraftReply(currentMsg, "");
+  if (result.error) {
+    addAIMessage("Error: " + result.error, "error");
+  } else {
+    addAIMessage(result.text, "assistant");
+    // Also offer to use it
+    const useBtn = document.createElement("div");
+    useBtn.className = "ai-msg system";
+    useBtn.style.cursor = "pointer";
+    useBtn.textContent = "Click here to use this draft in a reply";
+    useBtn.addEventListener("click", () => {
+      openCompose("reply");
+      setTimeout(() => { $("#composeEditor").innerText = result.text; }, 100);
+    });
+    $("#aiMessages").appendChild(useBtn);
+    $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
+  }
+}
+
+async function aiSendChat() {
+  const input = $("#aiInput");
+  const msg = input.value.trim();
+  if (!msg) return;
+
+  input.value = "";
+  addAIMessage(msg, "user");
+
+  const result = await gideon.aiChat(msg, currentMsg || null);
+  if (result.error) addAIMessage("Error: " + result.error, "error");
+  else addAIMessage(result.text, "assistant");
+}
+
+function bindAIEvents() {
+  $("#btnAI").addEventListener("click", toggleAI);
+  $("#aiClose").addEventListener("click", toggleAI);
+  $("#aiTriage").addEventListener("click", aiTriageInbox);
+  $("#aiAnalyze").addEventListener("click", aiAnalyzeCurrent);
+  $("#aiDraft").addEventListener("click", aiDraftReplyCurrent);
+  $("#aiSend").addEventListener("click", aiSendChat);
+  $("#aiInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); aiSendChat(); }
+  });
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

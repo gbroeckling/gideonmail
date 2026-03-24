@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification } = require("electron");
 const path = require("path");
-const Store = require("electron-store");
+const _esm = require("electron-store");
+const Store = _esm.default || _esm;
 const { ImapFlow } = require("imapflow");
 const nodemailer = require("nodemailer");
 const { simpleParser } = require("mailparser");
@@ -78,6 +79,7 @@ async function getImapClient() {
     secure: cfg.imapSecure !== false,
     auth: { user: cfg.username, pass: cfg.password },
     logger: false,
+    tls: { rejectUnauthorized: false },
   });
 
   await imapClient.connect();
@@ -361,8 +363,82 @@ async function searchMessages(query) {
   }
 }
 
-// ── IDLE (push notifications) ───────────────────────────────────────────────
+// ── IDLE (push notifications + AI triage + SMS) ────────────────────────────
 let idleActive = false;
+let lastSeenUids = new Set();
+
+async function sendSMS(message) {
+  const sid = store.get("twilio_sid");
+  const token = store.get("twilio_token");
+  const from = store.get("twilio_from");
+  const to = store.get("sms_to");
+  if (!sid || !token || !from || !to) return;
+
+  try {
+    const twilio = require("twilio")(sid, token);
+    await twilio.messages.create({ body: message.substring(0, 1600), from, to });
+  } catch (e) {
+    console.error("SMS failed:", e.message);
+  }
+}
+
+async function autoTriageNewMail(messages) {
+  // Find new unread messages we haven't seen before
+  const newMsgs = messages.filter((m) => !m.seen && !lastSeenUids.has(m.uid));
+  if (!newMsgs.length) return;
+
+  // Update seen set
+  for (const m of messages) lastSeenUids.add(m.uid);
+
+  // Desktop notification for any new mail
+  if (Notification.isSupported()) {
+    const n = new Notification({
+      title: `${newMsgs.length} new email${newMsgs.length > 1 ? "s" : ""}`,
+      body: newMsgs.map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`).join("\n").substring(0, 200),
+      silent: false,
+    });
+    n.show();
+    n.on("click", () => { mainWindow?.show(); mainWindow?.focus(); });
+  }
+
+  // AI triage for importance — only if API key configured
+  const apiKey = store.get("anthropic_api_key");
+  const smsTo = store.get("sms_to");
+  if (!apiKey || !smsTo) return;
+
+  try {
+    const client = getAnthropicClient();
+    const account = store.get("account") || {};
+
+    const emailList = newMsgs.slice(0, 5).map((m) => {
+      return `From: ${m.from?.name || m.from?.address || "Unknown"}\nSubject: ${m.subject}\nDate: ${m.date}`;
+    }).join("\n---\n");
+
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-5-20250514",
+      max_tokens: 256,
+      system: `You are an email importance filter for ${account.displayName || "the user"}.
+For each email, respond with ONLY "URGENT" or "SKIP" followed by a 5-word reason.
+URGENT means: needs action within hours, from a real person about something important.
+SKIP means: marketing, newsletter, automated notification, spam, or can wait.
+Be very selective — only flag truly urgent emails.`,
+      messages: [{ role: "user", content: emailList }],
+    });
+
+    const triageText = response.content[0]?.text || "";
+    const urgentLines = triageText.split("\n").filter((l) => l.toUpperCase().startsWith("URGENT"));
+
+    if (urgentLines.length > 0) {
+      const urgentSummary = newMsgs.slice(0, urgentLines.length).map((m, i) => {
+        return `${m.from?.name || m.from?.address}: ${m.subject}`;
+      }).join("\n");
+
+      await sendSMS(`GideonMail: ${urgentLines.length} urgent email${urgentLines.length > 1 ? "s" : ""}:\n${urgentSummary}`);
+    }
+  } catch (e) {
+    console.error("AI auto-triage failed:", e.message);
+  }
+}
 
 async function startIdle() {
   if (idleActive) return;
@@ -373,11 +449,19 @@ async function startIdle() {
     const client = await getImapClient();
     idleActive = true;
 
-    // Re-check inbox every 2 minutes (IDLE keepalive)
+    // Seed the seen-UIDs set with current inbox
+    try {
+      const initial = await fetchInbox(0, 50);
+      for (const m of (initial.messages || [])) lastSeenUids.add(m.uid);
+      mainWindow?.webContents?.send("inbox-updated", initial);
+    } catch (e) {}
+
+    // Re-check inbox every 2 minutes
     const interval = setInterval(async () => {
       try {
         const result = await fetchInbox(0, 50);
         mainWindow?.webContents?.send("inbox-updated", result);
+        await autoTriageNewMail(result.messages || []);
       } catch (e) {
         // reconnect on next cycle
       }
@@ -496,6 +580,176 @@ ipcMain.handle("search-messages", async (_, query) => {
   } catch (e) {
     return { error: e.message };
   }
+});
+
+// ── AI Assistant (Claude) ────────────────────────────────────────────────────
+let anthropicClient = null;
+let conversationHistory = [];
+
+function getAnthropicClient() {
+  const apiKey = store.get("anthropic_api_key");
+  if (!apiKey) throw new Error("No Anthropic API key configured. Add it in Settings.");
+
+  if (!anthropicClient) {
+    const Anthropic = (() => {
+      const m = require("@anthropic-ai/sdk");
+      return m.default || m;
+    })();
+    anthropicClient = new Anthropic({ apiKey });
+  }
+  return anthropicClient;
+}
+
+async function aiTriage(messages) {
+  const client = getAnthropicClient();
+  const account = store.get("account") || {};
+
+  const emailSummaries = messages.slice(0, 20).map((m, i) => {
+    const from = m.from?.name || m.from?.address || "Unknown";
+    const date = m.date ? new Date(m.date).toLocaleString() : "";
+    return `${i + 1}. [${m.seen ? "READ" : "UNREAD"}]${m.flagged ? " [STARRED]" : ""} From: ${from} | Date: ${date} | Subject: ${m.subject}`;
+  }).join("\n");
+
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-5-20250514",
+    max_tokens: 1024,
+    system: `You are a personal email assistant for ${account.displayName || "the user"}.
+Triage incoming emails: categorize by priority (urgent, normal, low),
+flag spam/marketing, and suggest quick actions (reply, archive, delete, flag).
+Be concise — one line per email with your recommendation.
+Use format: [#] PRIORITY | Action — Brief reason`,
+    messages: [{ role: "user", content: `Here are my latest emails:\n\n${emailSummaries}\n\nTriage these for me.` }],
+  });
+
+  return response.content[0]?.text || "No response";
+}
+
+async function aiAnalyzeEmail(email) {
+  const client = getAnthropicClient();
+  const account = store.get("account") || {};
+
+  const content = email.text || email.html?.replace(/<[^>]+>/g, " ").substring(0, 3000) || "(empty)";
+
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-5-20250514",
+    max_tokens: 1024,
+    system: `You are a personal email assistant for ${account.displayName || "the user"}.
+Analyze this email and provide:
+1. A one-sentence summary
+2. Priority (urgent/normal/low)
+3. Suggested action (reply/archive/delete/flag/forward)
+4. If reply is suggested, draft a brief response
+Be concise and professional.`,
+    messages: [{ role: "user", content: `From: ${email.from?.name || ""} <${email.from?.address || ""}>\nTo: ${(email.to || []).map(t => t.address).join(", ")}\nDate: ${email.date}\nSubject: ${email.subject}\n\n${content}` }],
+  });
+
+  return response.content[0]?.text || "No response";
+}
+
+async function aiDraftReply(email, instruction) {
+  const client = getAnthropicClient();
+  const account = store.get("account") || {};
+
+  const content = email.text || email.html?.replace(/<[^>]+>/g, " ").substring(0, 3000) || "";
+
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-5-20250514",
+    max_tokens: 1024,
+    system: `You are drafting an email reply on behalf of ${account.displayName || "the user"} (${account.email || ""}).
+Write a professional, concise reply. Only output the reply body — no subject line, no greeting preamble unless appropriate.
+Match the tone of the original email (formal if formal, casual if casual).`,
+    messages: [
+      { role: "user", content: `Original email from ${email.from?.name || email.from?.address || ""}:\nSubject: ${email.subject}\n\n${content}\n\n---\nInstruction: ${instruction || "Write an appropriate reply."}` },
+    ],
+  });
+
+  return response.content[0]?.text || "";
+}
+
+async function aiChat(message, emailContext) {
+  const client = getAnthropicClient();
+  const account = store.get("account") || {};
+
+  conversationHistory.push({ role: "user", content: message });
+  // Keep last 20 messages
+  if (conversationHistory.length > 20) conversationHistory = conversationHistory.slice(-20);
+
+  const systemMsg = emailContext
+    ? `You are a personal email assistant for ${account.displayName || "the user"} (${account.email || ""}). You are currently looking at an email.\nFrom: ${emailContext.from?.name || ""} <${emailContext.from?.address || ""}>\nSubject: ${emailContext.subject}\nDate: ${emailContext.date}\n\nEmail body:\n${(emailContext.text || emailContext.html?.replace(/<[^>]+>/g, " ") || "").substring(0, 2000)}\n\nHelp the user with this email — summarize, draft replies, suggest actions, answer questions about it.`
+    : `You are a personal email assistant for ${account.displayName || "the user"} (${account.email || ""}). Help manage their email — triage, draft replies, suggest actions, answer questions. Be concise.`;
+
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-5-20250514",
+    max_tokens: 1024,
+    system: systemMsg,
+    messages: conversationHistory,
+  });
+
+  const reply = response.content[0]?.text || "No response";
+  conversationHistory.push({ role: "assistant", content: reply });
+
+  return reply;
+}
+
+ipcMain.handle("ai-get-key", () => {
+  return store.get("anthropic_api_key") ? "••••••••" : "";
+});
+
+ipcMain.handle("ai-save-key", (_, key) => {
+  if (key && key !== "••••••••") {
+    store.set("anthropic_api_key", key);
+    anthropicClient = null;
+  }
+  return { ok: true };
+});
+
+ipcMain.handle("sms-get-config", () => {
+  return {
+    twilioSid: store.get("twilio_sid") ? "••••••••" : "",
+    twilioToken: store.get("twilio_token") ? "••••••••" : "",
+    twilioFrom: store.get("twilio_from") || "",
+    smsTo: store.get("sms_to") || "",
+  };
+});
+
+ipcMain.handle("sms-save-config", (_, cfg) => {
+  if (cfg.twilioSid && cfg.twilioSid !== "••••••••") store.set("twilio_sid", cfg.twilioSid);
+  if (cfg.twilioToken && cfg.twilioToken !== "••••••••") store.set("twilio_token", cfg.twilioToken);
+  if (cfg.twilioFrom) store.set("twilio_from", cfg.twilioFrom);
+  if (cfg.smsTo) store.set("sms_to", cfg.smsTo);
+  return { ok: true };
+});
+
+ipcMain.handle("sms-test", async (_, msg) => {
+  try {
+    await sendSMS(msg || "GideonMail test: SMS notifications are working.");
+    return { ok: true };
+  } catch (e) { return { error: e.message }; }
+});
+
+ipcMain.handle("ai-triage", async (_, messages) => {
+  try { return { text: await aiTriage(messages) }; }
+  catch (e) { return { error: e.message }; }
+});
+
+ipcMain.handle("ai-analyze", async (_, email) => {
+  try { return { text: await aiAnalyzeEmail(email) }; }
+  catch (e) { return { error: e.message }; }
+});
+
+ipcMain.handle("ai-draft-reply", async (_, email, instruction) => {
+  try { return { text: await aiDraftReply(email, instruction) }; }
+  catch (e) { return { error: e.message }; }
+});
+
+ipcMain.handle("ai-chat", async (_, message, emailContext) => {
+  try { return { text: await aiChat(message, emailContext) }; }
+  catch (e) { return { error: e.message }; }
+});
+
+ipcMain.handle("ai-clear-history", () => {
+  conversationHistory = [];
+  return { ok: true };
 });
 
 // ── App lifecycle ───────────────────────────────────────────────────────────
