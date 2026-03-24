@@ -456,7 +456,7 @@ async function startIdle() {
       mainWindow?.webContents?.send("inbox-updated", initial);
     } catch (e) {}
 
-    // Re-check inbox every 2 minutes
+    // Re-check inbox every 60 minutes (one AI call per batch of new emails)
     const interval = setInterval(async () => {
       try {
         const result = await fetchInbox(0, 50);
@@ -465,7 +465,7 @@ async function startIdle() {
       } catch (e) {
         // reconnect on next cycle
       }
-    }, 120000);
+    }, 3600000);
 
     app.on("before-quit", () => clearInterval(interval));
   } catch (e) {
