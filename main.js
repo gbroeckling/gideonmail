@@ -732,6 +732,27 @@ Be very selective — only flag truly urgent emails.${getInstructionsBlock()}`,
   _setLastCheckTime();
 }
 
+// ── Security filters ────────────────────────────────────────────────────
+async function runSecurityFilters(messages) {
+  const filters = store.get("security_filters") || { spamassassin: true, spamhaus: false, virustotal: false, safebrowsing: false, phishtank: false, abuseipdb: false };
+  const results = {};
+
+  for (const m of messages) {
+    const key = m.uid;
+    results[key] = { score: 0, flags: [] };
+
+    // SpamAssassin: check X-Spam headers (already in email headers from ISPConfig)
+    if (filters.spamassassin && m._spamScore !== undefined) {
+      if (m._spamScore >= 5) {
+        results[key].score += m._spamScore;
+        results[key].flags.push(`SpamAssassin: ${m._spamScore}`);
+      }
+    }
+  }
+
+  return results;
+}
+
 async function startIdle() {
   if (idleActive) return;
   const cfg = store.get("account");
@@ -745,13 +766,12 @@ async function startIdle() {
     try {
       const initial = await fetchInbox(0, 50);
       mainWindow?.webContents?.send("inbox-updated", initial);
-      // Process any emails that arrived while app was closed
-      // The persistent sentUids tracking prevents double-sends
       await autoTriageNewMail(initial.messages || []);
     } catch (e) {}
 
-    // Re-check inbox on configured interval
-    const checkMin = store.get("convo_check_interval_min") || 60;
+    // Auto-check on configurable interval (default 120 min / 2 hours)
+    const checkMin = store.get("auto_check_interval_min") || 120;
+    console.log(`Auto-check interval: ${checkMin} minutes`);
     const interval = setInterval(async () => {
       try {
         const result = await fetchInbox(0, 50);
@@ -1397,6 +1417,35 @@ ipcMain.handle("autolaunch-set", async (_, enabled) => {
     else await autoLauncher.disable();
     return { ok: true, enabled };
   } catch (e) { return { ok: false, error: e.message }; }
+});
+
+// ── Security filters config ──────────────────────────────────────────────
+ipcMain.handle("security-filters-get", () => {
+  return store.get("security_filters") || {
+    spamassassin: true,
+    spamhaus: false,
+    virustotal: false,
+    safebrowsing: false,
+    phishtank: false,
+    abuseipdb: false,
+    clamav: false,
+    bayesian: false,
+  };
+});
+
+ipcMain.handle("security-filters-save", (_, filters) => {
+  store.set("security_filters", filters);
+  return { ok: true };
+});
+
+// ── Auto-check interval ─────────────────────────────────────────────────
+ipcMain.handle("autocheck-get", () => {
+  return { intervalMin: store.get("auto_check_interval_min") || 120 };
+});
+
+ipcMain.handle("autocheck-save", (_, cfg) => {
+  if (cfg.intervalMin !== undefined) store.set("auto_check_interval_min", cfg.intervalMin);
+  return { ok: true };
 });
 
 ipcMain.handle("sms-settings-get", () => _getSmsSettings());

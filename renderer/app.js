@@ -78,7 +78,7 @@ function bindEvents() {
     tab.addEventListener("click", () => {
       $$(".rules-tab").forEach((t) => t.classList.remove("active"));
       tab.classList.add("active");
-      const sections = { whitelist: "rulesWhitelist", blacklist: "rulesBlacklist", greylist: "rulesGreylist", instructions: "rulesInstructions", conversations: "rulesConversations", sms: "rulesSms" };
+      const sections = { whitelist: "rulesWhitelist", blacklist: "rulesBlacklist", greylist: "rulesGreylist", instructions: "rulesInstructions", security: "rulesSecurity", conversations: "rulesConversations", sms: "rulesSms" };
       Object.values(sections).forEach((id) => { const el = $(`#${id}`); if (el) el.style.display = "none"; });
       const target = sections[tab.dataset.tab];
       if (target) $(`#${target}`).style.display = "block";
@@ -666,6 +666,21 @@ async function openRules() {
   $("#cfgConvoInterval").value = convoCfg.checkIntervalMin || 60;
   $("#cfgConvoResult").textContent = "";
 
+  // Security filters
+  const sf = await gideon.securityFiltersGet();
+  $("#sfSpamassassin").checked = sf.spamassassin || false;
+  $("#sfSpamhaus").checked = sf.spamhaus || false;
+  $("#sfVirustotal").checked = sf.virustotal || false;
+  $("#sfSafebrowsing").checked = sf.safebrowsing || false;
+  $("#sfPhishtank").checked = sf.phishtank || false;
+  $("#sfAbuseipdb").checked = sf.abuseipdb || false;
+  $("#sfClamav").checked = sf.clamav || false;
+  $("#sfBayesian").checked = sf.bayesian || false;
+
+  // Auto-check interval
+  const ac = await gideon.autocheckGet();
+  $("#sfAutoCheckInterval").value = String(ac.intervalMin || 120);
+
   $("#rulesModal").style.display = "flex";
   renderManagedList("#whitelistEntries", gideon.whitelistGet, gideon.whitelistToggle, gideon.whitelistRemove, gideon.whitelistUpdate, "var(--accent)");
   renderManagedList("#blacklistEntries", gideon.blacklistGet, gideon.blacklistToggle, gideon.blacklistRemove, gideon.blacklistUpdate, "#ef4444");
@@ -690,6 +705,19 @@ async function saveRulesSettings() {
     minReplies: parseInt($("#cfgConvoMinReplies").value) || 2,
     lookbackMonths: parseInt($("#cfgConvoLookback").value) || 6,
     checkIntervalMin: parseInt($("#cfgConvoInterval").value) || 60,
+  });
+  await gideon.securityFiltersSave({
+    spamassassin: $("#sfSpamassassin").checked,
+    spamhaus: $("#sfSpamhaus").checked,
+    virustotal: $("#sfVirustotal").checked,
+    safebrowsing: $("#sfSafebrowsing").checked,
+    phishtank: $("#sfPhishtank").checked,
+    abuseipdb: $("#sfAbuseipdb").checked,
+    clamav: $("#sfClamav").checked,
+    bayesian: $("#sfBayesian").checked,
+  });
+  await gideon.autocheckSave({
+    intervalMin: parseInt($("#sfAutoCheckInterval").value) || 120,
   });
 }
 

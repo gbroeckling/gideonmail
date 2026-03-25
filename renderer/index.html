@@ -121,6 +121,7 @@
         <button class="rules-tab" data-tab="blacklist">Blacklist</button>
         <button class="rules-tab" data-tab="greylist">Greylist</button>
         <button class="rules-tab" data-tab="instructions">AI Rules</button>
+        <button class="rules-tab" data-tab="security">Security</button>
         <button class="rules-tab" data-tab="conversations">Convos</button>
         <button class="rules-tab" data-tab="sms">SMS</button>
       </div>
@@ -161,6 +162,68 @@
         <div style="padding:8px 16px;display:flex;gap:6px">
           <input type="text" id="instrAddInput" placeholder="e.g. Always flag emails from my accountant" style="flex:1;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
           <button id="instrAddBtn" class="send-btn" style="padding:6px 14px;font-size:12px">Add</button>
+        </div>
+      </div>
+      <!-- Security Filters -->
+      <div id="rulesSecurity" class="rules-section" style="display:none">
+        <div style="padding:12px 16px;font-size:12px;color:var(--fg2)">Enable security filters to scan incoming emails. Runs on each auto-check cycle.</div>
+        <div style="padding:8px 16px">
+          <label style="display:block;padding:6px 0;font-size:12px;color:var(--fg)">
+            <input type="checkbox" id="sfSpamassassin" />
+            <strong>SpamAssassin Headers</strong>
+            <div style="font-size:10px;color:var(--fg2);margin:2px 0 0 22px">Reads X-Spam-Score from your ISPConfig server. Zero API calls — already scored server-side. Best first line of defense.</div>
+          </label>
+          <label style="display:block;padding:6px 0;font-size:12px;color:var(--fg)">
+            <input type="checkbox" id="sfSpamhaus" />
+            <strong>Spamhaus ZEN</strong> <span style="color:#22c55e;font-size:10px">FREE</span>
+            <div style="font-size:10px;color:var(--fg2);margin:2px 0 0 22px">DNS blocklist — checks sender IP against known spam networks. Fast, reliable, industry standard. Free under 300k queries/day.</div>
+          </label>
+          <label style="display:block;padding:6px 0;font-size:12px;color:var(--fg)">
+            <input type="checkbox" id="sfVirustotal" />
+            <strong>VirusTotal</strong> <span style="color:#22c55e;font-size:10px">FREE (500/day)</span>
+            <div style="font-size:10px;color:var(--fg2);margin:2px 0 0 22px">Scans attachments and URLs against 70+ antivirus engines. Best malware/attachment scanner. Free tier: 4 lookups/min, 500/day.</div>
+          </label>
+          <label style="display:block;padding:6px 0;font-size:12px;color:var(--fg)">
+            <input type="checkbox" id="sfSafebrowsing" />
+            <strong>Google Safe Browsing</strong> <span style="color:#22c55e;font-size:10px">FREE (10k/day)</span>
+            <div style="font-size:10px;color:var(--fg2);margin:2px 0 0 22px">Checks URLs against Google's malware and phishing database. Massive database, very current. Free: 10k lookups/day.</div>
+          </label>
+          <label style="display:block;padding:6px 0;font-size:12px;color:var(--fg)">
+            <input type="checkbox" id="sfPhishtank" />
+            <strong>PhishTank</strong> <span style="color:#22c55e;font-size:10px">FREE</span>
+            <div style="font-size:10px;color:var(--fg2);margin:2px 0 0 22px">Checks URLs against community-reported phishing sites. Good supplementary phishing detection.</div>
+          </label>
+          <label style="display:block;padding:6px 0;font-size:12px;color:var(--fg)">
+            <input type="checkbox" id="sfAbuseipdb" />
+            <strong>AbuseIPDB</strong> <span style="color:#22c55e;font-size:10px">FREE (1000/day)</span>
+            <div style="font-size:10px;color:var(--fg2);margin:2px 0 0 22px">Sender IP reputation scoring. Catches emails from compromised servers and known abuse sources.</div>
+          </label>
+          <label style="display:block;padding:6px 0;font-size:12px;color:var(--fg)">
+            <input type="checkbox" id="sfClamav" />
+            <strong>ClamAV</strong> <span style="color:#22c55e;font-size:10px">FREE (local)</span>
+            <div style="font-size:10px;color:var(--fg2);margin:2px 0 0 22px">Local antivirus scan of attachments. No API limits, fully offline. Requires ClamAV installed on your system.</div>
+          </label>
+          <label style="display:block;padding:6px 0;font-size:12px;color:var(--fg)">
+            <input type="checkbox" id="sfBayesian" />
+            <strong>Built-in Bayesian Filter</strong> <span style="color:#22c55e;font-size:10px">FREE</span>
+            <div style="font-size:10px;color:var(--fg2);margin:2px 0 0 22px">Learns from your flag/delete actions over time. Gets smarter the more you use GideonMail. No external service needed.</div>
+          </label>
+        </div>
+        <div style="padding:8px 16px;border-top:1px solid var(--border)">
+          <div style="font-size:11px;color:var(--fg2);font-weight:600;margin-bottom:6px">Auto-Check Interval</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <select id="sfAutoCheckInterval" style="padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px">
+              <option value="15">Every 15 minutes</option>
+              <option value="30">Every 30 minutes</option>
+              <option value="60">Every 1 hour</option>
+              <option value="120" selected>Every 2 hours (default)</option>
+              <option value="240">Every 4 hours</option>
+              <option value="480">Every 8 hours</option>
+              <option value="720">Every 12 hours</option>
+              <option value="1440">Once a day</option>
+            </select>
+            <span style="font-size:10px;color:var(--fg2)">AI instructions, whitelist, blacklist, greylist, and security filters all run on this cycle.</span>
+          </div>
         </div>
       </div>
       <!-- Conversation Alerts -->

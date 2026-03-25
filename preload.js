@@ -29,6 +29,14 @@ contextBridge.exposeInMainWorld("gideon", {
   aiChat:        (msg, ctx)      => ipcRenderer.invoke("ai-chat", msg, ctx),
   aiClearHistory:()              => ipcRenderer.invoke("ai-clear-history"),
 
+  // Security filters
+  securityFiltersGet:  () => ipcRenderer.invoke("security-filters-get"),
+  securityFiltersSave: (f) => ipcRenderer.invoke("security-filters-save", f),
+
+  // Auto-check interval
+  autocheckGet:  () => ipcRenderer.invoke("autocheck-get"),
+  autocheckSave: (c) => ipcRenderer.invoke("autocheck-save", c),
+
   // Auto-launch
   autolaunchGet: () => ipcRenderer.invoke("autolaunch-get"),
   autolaunchSet: (on) => ipcRenderer.invoke("autolaunch-set", on),
