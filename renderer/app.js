@@ -78,12 +78,32 @@ function bindEvents() {
     tab.addEventListener("click", () => {
       $$(".rules-tab").forEach((t) => t.classList.remove("active"));
       tab.classList.add("active");
-      const sections = { whitelist: "rulesWhitelist", instructions: "rulesInstructions", conversations: "rulesConversations", sms: "rulesSms" };
+      const sections = { whitelist: "rulesWhitelist", blacklist: "rulesBlacklist", greylist: "rulesGreylist", instructions: "rulesInstructions", conversations: "rulesConversations", sms: "rulesSms" };
       Object.values(sections).forEach((id) => { const el = $(`#${id}`); if (el) el.style.display = "none"; });
       const target = sections[tab.dataset.tab];
       if (target) $(`#${target}`).style.display = "block";
     });
   }
+
+  // Blacklist add
+  $("#blAddBtn").addEventListener("click", async () => {
+    const addr = $("#blAddAddr").value.trim();
+    if (!addr) return;
+    await gideon.blacklistAdd({ address: addr, name: $("#blAddName").value.trim() });
+    $("#blAddAddr").value = ""; $("#blAddName").value = "";
+    renderManagedList("#blacklistEntries", gideon.blacklistGet, gideon.blacklistToggle, gideon.blacklistRemove, gideon.blacklistUpdate, "#ef4444");
+  });
+  $("#blAddAddr").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#blAddBtn").click(); });
+
+  // Greylist add
+  $("#glAddBtn").addEventListener("click", async () => {
+    const addr = $("#glAddAddr").value.trim();
+    if (!addr) return;
+    await gideon.greylistAdd({ address: addr, name: $("#glAddName").value.trim() });
+    $("#glAddAddr").value = ""; $("#glAddName").value = "";
+    renderManagedList("#greylistEntries", gideon.greylistGet, gideon.greylistToggle, gideon.greylistRemove, gideon.greylistUpdate, "#94a3b8");
+  });
+  $("#glAddAddr").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#glAddBtn").click(); });
 
   // Instructions add
   $("#instrAddBtn").addEventListener("click", async () => {
@@ -208,22 +228,40 @@ async function loadMessages() {
   $("#pageInfo").textContent = total > 0 ? `${currentPage * 50 + 1}–${Math.min((currentPage + 1) * 50, total)} of ${total}` : "Empty";
 }
 
-function renderMessageList() {
+let senderStatuses = {};
+
+async function renderMessageList() {
   const list = $("#messageList");
   list.innerHTML = "";
 
+  // Bulk fetch sender list statuses for coloring
+  try {
+    senderStatuses = await gideon.senderStatusBulk(currentMessages) || {};
+  } catch (e) { senderStatuses = {}; }
+
   for (const m of currentMessages) {
+    const status = senderStatuses[m.from?.address] || null;
     const div = document.createElement("div");
     div.className = "msg-row" + (!m.seen ? " unread" : "") + (m.uid === currentUid ? " active" : "");
+
+    // Color based on list membership
+    if (status === "blacklist") {
+      div.style.cssText = "background:#450a0a;color:#fecaca;border-left:3px solid #ef4444";
+    } else if (status === "greylist") {
+      div.style.cssText = "background:#1e293b;color:#cbd5e1;border-left:3px solid #64748b";
+    }
+
     div.innerHTML = `
       <div class="msg-top">
         <span class="msg-from">${escHtml(m.from?.name || m.from?.address || "Unknown")}</span>
         <span class="msg-date">${formatDate(m.date)}</span>
       </div>
-      <div class="msg-subject">${escHtml(m.subject)}</div>
+      <div class="msg-subject" style="${status === "blacklist" ? "color:#fca5a5" : status === "greylist" ? "color:#94a3b8" : ""}">${escHtml(m.subject)}</div>
       <div class="msg-icons">
         ${m.flagged ? '<span class="star">&#9733;</span>' : ""}
         ${m.hasAttachments ? '<span class="clip">&#128206;</span>' : ""}
+        ${status === "blacklist" ? '<span style="color:#ef4444;font-size:10px">BLOCKED</span>' : ""}
+        ${status === "greylist" ? '<span style="color:#64748b;font-size:10px">GREY</span>' : ""}
       </div>
     `;
     div.addEventListener("click", () => openMessage(m.uid));
@@ -551,6 +589,62 @@ async function saveSettings() {
   loadMessages();
 }
 
+// ── Generic list renderer (whitelist, blacklist, greylist) ──────────────
+async function renderManagedList(containerId, getFn, toggleFn, removeFn, updateFn, color) {
+  const list = await getFn();
+  const container = $(containerId);
+  if (!container) return;
+  container.innerHTML = "";
+
+  const header = document.createElement("div");
+  header.style.cssText = "font-size:10px;color:" + color + ";padding:2px 0 4px;font-weight:600";
+  header.textContent = list.length ? `${list.length} entr${list.length > 1 ? "ies" : "y"}` : "Empty. Add one below.";
+  container.appendChild(header);
+
+  for (const item of list) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:6px;padding:5px 4px;font-size:11px;border-bottom:1px solid var(--border);background:var(--bg2);border-radius:4px;margin-bottom:2px";
+
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = item.enabled;
+    toggle.addEventListener("change", async () => { await toggleFn(item.id); renderManagedList(containerId, getFn, toggleFn, removeFn, updateFn, color); });
+
+    const info = document.createElement("div");
+    info.style.cssText = `flex:1;color:${item.enabled ? "var(--fg)" : "var(--fg2)"};${item.enabled ? "" : "text-decoration:line-through"}`;
+    const addrLine = document.createElement("div");
+    addrLine.textContent = item.address;
+    addrLine.style.fontWeight = "600";
+    info.appendChild(addrLine);
+    if (item.name) { const n = document.createElement("div"); n.textContent = item.name; n.style.cssText = "font-size:10px;color:var(--fg2)"; info.appendChild(n); }
+
+    const editBtn = document.createElement("button");
+    editBtn.style.cssText = "background:none;border:1px solid var(--bg3);color:var(--fg2);cursor:pointer;font-size:10px;padding:1px 6px;border-radius:3px";
+    editBtn.textContent = "Edit";
+    editBtn.addEventListener("click", () => {
+      const newAddr = prompt("Email or name to match:", item.address);
+      if (newAddr === null) return;
+      const newName = prompt("Label (optional):", item.name || "");
+      updateFn(item.id, { address: newAddr, name: newName || "" }).then(() => renderManagedList(containerId, getFn, toggleFn, removeFn, updateFn, color));
+    });
+
+    const del = document.createElement("button");
+    del.style.cssText = "background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;padding:0 4px";
+    del.textContent = "\u00d7";
+    del.addEventListener("click", async () => {
+      if (!confirm(`Remove "${item.name || item.address}"?`)) return;
+      await removeFn(item.id);
+      renderManagedList(containerId, getFn, toggleFn, removeFn, updateFn, color);
+    });
+
+    row.appendChild(toggle);
+    row.appendChild(info);
+    row.appendChild(editBtn);
+    row.appendChild(del);
+    container.appendChild(row);
+  }
+}
+
 // ── Rules Panel ─────────────────────────────────────────────────────────
 async function openRules() {
   // Load all settings into the rules panel
@@ -573,7 +667,9 @@ async function openRules() {
   $("#cfgConvoResult").textContent = "";
 
   $("#rulesModal").style.display = "flex";
-  renderWhitelist();
+  renderManagedList("#whitelistEntries", gideon.whitelistGet, gideon.whitelistToggle, gideon.whitelistRemove, gideon.whitelistUpdate, "var(--accent)");
+  renderManagedList("#blacklistEntries", gideon.blacklistGet, gideon.blacklistToggle, gideon.blacklistRemove, gideon.blacklistUpdate, "#ef4444");
+  renderManagedList("#greylistEntries", gideon.greylistGet, gideon.greylistToggle, gideon.greylistRemove, gideon.greylistUpdate, "#94a3b8");
   renderSettingsInstructions();
 }
 

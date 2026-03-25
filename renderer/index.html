@@ -116,11 +116,13 @@
         <span>Rules &amp; Alerts</span>
         <button id="rulesClose" class="icon-btn">&times;</button>
       </div>
-      <div style="display:flex;border-bottom:1px solid var(--border)">
-        <button class="rules-tab active" data-tab="whitelist">VIP Senders</button>
-        <button class="rules-tab" data-tab="instructions">AI Instructions</button>
-        <button class="rules-tab" data-tab="conversations">Conversations</button>
-        <button class="rules-tab" data-tab="sms">SMS Settings</button>
+      <div style="display:flex;border-bottom:1px solid var(--border);flex-wrap:wrap">
+        <button class="rules-tab active" data-tab="whitelist">VIP</button>
+        <button class="rules-tab" data-tab="blacklist">Blacklist</button>
+        <button class="rules-tab" data-tab="greylist">Greylist</button>
+        <button class="rules-tab" data-tab="instructions">AI Rules</button>
+        <button class="rules-tab" data-tab="conversations">Convos</button>
+        <button class="rules-tab" data-tab="sms">SMS</button>
       </div>
       <!-- VIP Whitelist -->
       <div id="rulesWhitelist" class="rules-section">
@@ -130,6 +132,26 @@
           <input type="text" id="wlAddAddr" placeholder="Email or name to match" style="flex:1;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
           <input type="text" id="wlAddName" placeholder="Label" style="width:100px;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
           <button id="wlAddBtn" class="send-btn" style="padding:6px 14px;font-size:12px">Add</button>
+        </div>
+      </div>
+      <!-- Blacklist -->
+      <div id="rulesBlacklist" class="rules-section" style="display:none">
+        <div style="padding:12px 16px;font-size:12px;color:#ef4444">Emails from these senders show in dark red. Kept for 1 week then auto-deleted.</div>
+        <div id="blacklistEntries" style="padding:4px 16px;max-height:250px;overflow-y:auto"></div>
+        <div style="padding:8px 16px;display:flex;gap:6px">
+          <input type="text" id="blAddAddr" placeholder="Email or name to match" style="flex:1;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
+          <input type="text" id="blAddName" placeholder="Label" style="width:100px;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
+          <button id="blAddBtn" class="send-btn" style="padding:6px 14px;font-size:12px;background:#7f1d1d;border-color:#ef4444">Add</button>
+        </div>
+      </div>
+      <!-- Greylist -->
+      <div id="rulesGreylist" class="rules-section" style="display:none">
+        <div style="padding:12px 16px;font-size:12px;color:#94a3b8">Emails from these senders show in grey. They will never trigger SMS notifications.</div>
+        <div id="greylistEntries" style="padding:4px 16px;max-height:250px;overflow-y:auto"></div>
+        <div style="padding:8px 16px;display:flex;gap:6px">
+          <input type="text" id="glAddAddr" placeholder="Email or name to match" style="flex:1;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
+          <input type="text" id="glAddName" placeholder="Label" style="width:100px;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
+          <button id="glAddBtn" class="send-btn" style="padding:6px 14px;font-size:12px;background:#334155;border-color:#64748b">Add</button>
         </div>
       </div>
       <!-- AI Instructions -->

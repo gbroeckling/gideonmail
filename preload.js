@@ -47,6 +47,19 @@ contextBridge.exposeInMainWorld("gideon", {
   // Check Now (debug)
   checkNow: () => ipcRenderer.invoke("check-now"),
 
+  // Blacklist & Greylist
+  blacklistGet:    ()        => ipcRenderer.invoke("blacklist-get"),
+  blacklistAdd:    (e)       => ipcRenderer.invoke("blacklist-add", e),
+  blacklistRemove: (id)      => ipcRenderer.invoke("blacklist-remove", id),
+  blacklistToggle: (id)      => ipcRenderer.invoke("blacklist-toggle", id),
+  blacklistUpdate: (id, u)   => ipcRenderer.invoke("blacklist-update", id, u),
+  greylistGet:     ()        => ipcRenderer.invoke("greylist-get"),
+  greylistAdd:     (e)       => ipcRenderer.invoke("greylist-add", e),
+  greylistRemove:  (id)      => ipcRenderer.invoke("greylist-remove", id),
+  greylistToggle:  (id)      => ipcRenderer.invoke("greylist-toggle", id),
+  greylistUpdate:  (id, u)   => ipcRenderer.invoke("greylist-update", id, u),
+  senderStatusBulk:(msgs)    => ipcRenderer.invoke("sender-list-status-bulk", msgs),
+
   // Conversation Alerts
   convoGetConfig:  ()    => ipcRenderer.invoke("convo-get-config"),
   convoSaveConfig: (cfg) => ipcRenderer.invoke("convo-save-config", cfg),

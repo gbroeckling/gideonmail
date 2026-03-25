@@ -631,13 +631,26 @@ async function autoTriageNewMail(messages) {
     if (sinceLast < 30000) { return; } // checked less than 30s ago, skip
   }
 
+  // Filter out greylisted and blacklisted senders from SMS triggers
+  const _greylist = (store.get("sms_greylist") || []).filter((g) => g.enabled);
+  const _blacklist = (store.get("sms_blacklist") || []).filter((b) => b.enabled);
+  const _matchesList = (msg, list) => list.some((w) => {
+    const addr = (msg.from?.address || "").toLowerCase();
+    const name = (msg.from?.name || "").toLowerCase();
+    return w.address && (addr === w.address || addr.includes(w.address) || name.includes(w.address));
+  });
+  const smsEligible = newMsgs.filter((m) => !_matchesList(m, _greylist) && !_matchesList(m, _blacklist));
+
+  // Run blacklist cleanup (delete emails > 1 week old from blacklisted senders)
+  cleanupBlacklistedEmails().catch((e) => console.error("Blacklist cleanup:", e.message));
+
   // ── Whitelist check (always SMS for these senders) ─────────────────────
   const smsTo = store.get("sms_to");
   if (smsTo) {
     const whitelist = (store.get("sms_whitelist") || []).filter((w) => w.enabled);
     if (whitelist.length > 0) {
       const whitelistAlerts = [];
-      for (const msg of newMsgs) {
+      for (const msg of smsEligible) {
         const fromAddr = (msg.from?.address || "").toLowerCase();
         const fromName = (msg.from?.name || "").toLowerCase();
         for (const w of whitelist) {
@@ -1444,6 +1457,84 @@ ipcMain.handle("whitelist-update", (_, id, updates) => {
   store.set("sms_whitelist", list);
   return list;
 });
+
+// ── Blacklist & Greylist (same CRUD pattern as whitelist) ────────────────
+function _listCRUD(storeKey) {
+  return {
+    get: () => store.get(storeKey) || [],
+    add: (entry) => {
+      const list = store.get(storeKey) || [];
+      list.push({ id: Date.now().toString(), address: (entry.address || "").trim().toLowerCase(), name: (entry.name || "").trim(), enabled: true, created: new Date().toISOString() });
+      store.set(storeKey, list);
+      return list;
+    },
+    remove: (id) => { let list = store.get(storeKey) || []; list = list.filter((i) => i.id !== id); store.set(storeKey, list); return list; },
+    toggle: (id) => { const list = store.get(storeKey) || []; const item = list.find((i) => i.id === id); if (item) item.enabled = !item.enabled; store.set(storeKey, list); return list; },
+    update: (id, updates) => { const list = store.get(storeKey) || []; const item = list.find((i) => i.id === id); if (item) { if (updates.address !== undefined) item.address = updates.address.trim().toLowerCase(); if (updates.name !== undefined) item.name = updates.name.trim(); } store.set(storeKey, list); return list; },
+  };
+}
+const blacklistOps = _listCRUD("sms_blacklist");
+const greylistOps = _listCRUD("sms_greylist");
+
+ipcMain.handle("blacklist-get", () => blacklistOps.get());
+ipcMain.handle("blacklist-add", (_, e) => blacklistOps.add(e));
+ipcMain.handle("blacklist-remove", (_, id) => blacklistOps.remove(id));
+ipcMain.handle("blacklist-toggle", (_, id) => blacklistOps.toggle(id));
+ipcMain.handle("blacklist-update", (_, id, u) => blacklistOps.update(id, u));
+
+ipcMain.handle("greylist-get", () => greylistOps.get());
+ipcMain.handle("greylist-add", (_, e) => greylistOps.add(e));
+ipcMain.handle("greylist-remove", (_, id) => greylistOps.remove(id));
+ipcMain.handle("greylist-toggle", (_, id) => greylistOps.toggle(id));
+ipcMain.handle("greylist-update", (_, id, u) => greylistOps.update(id, u));
+
+// Check which list a sender is on (for UI coloring and SMS logic)
+function _senderListStatus(fromAddress, fromName) {
+  const addr = (fromAddress || "").toLowerCase();
+  const name = (fromName || "").toLowerCase();
+  const match = (list) => list.filter((w) => w.enabled).some((w) => w.address && (addr === w.address || addr.includes(w.address) || name.includes(w.address)));
+  if (match(store.get("sms_blacklist") || [])) return "blacklist";
+  if (match(store.get("sms_greylist") || [])) return "greylist";
+  if (match(store.get("sms_whitelist") || [])) return "whitelist";
+  return null;
+}
+
+ipcMain.handle("sender-list-status", (_, fromAddress, fromName) => {
+  return _senderListStatus(fromAddress, fromName);
+});
+
+// Bulk check for message list rendering
+ipcMain.handle("sender-list-status-bulk", (_, messages) => {
+  const result = {};
+  for (const m of messages) {
+    const key = m.from?.address || "";
+    if (key && !result[key]) result[key] = _senderListStatus(m.from?.address, m.from?.name);
+  }
+  return result;
+});
+
+// ── Blacklist auto-delete (1 week old) ──────────────────────────────────
+async function cleanupBlacklistedEmails() {
+  const blacklist = (store.get("sms_blacklist") || []).filter((b) => b.enabled);
+  if (!blacklist.length) return;
+  try {
+    const client = await createFreshImapClient();
+    try {
+      const lock = await client.getMailboxLock("INBOX");
+      try {
+        const oneWeekAgo = new Date(Date.now() - 7 * 24 * 3600000);
+        for (const b of blacklist) {
+          const uids = await client.search({ from: b.address, before: oneWeekAgo }, { uid: true });
+          if (uids.length) {
+            await client.messageFlagsAdd({ uid: uids }, ["\\Deleted"]);
+            await client.messageDelete({ uid: uids });
+            console.log(`Blacklist cleanup: deleted ${uids.length} old emails from ${b.address}`);
+          }
+        }
+      } finally { lock.release(); }
+    } finally { try { await client.logout(); } catch (e) {} }
+  } catch (e) { console.error("Blacklist cleanup failed:", e.message); }
+}
 
 // ── Conversation alert settings ─────────────────────────────────────────
 ipcMain.handle("convo-get-config", () => {
