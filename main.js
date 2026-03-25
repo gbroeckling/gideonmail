@@ -76,6 +76,7 @@ function createWindow() {
   });
 
   mainWindow.loadFile("renderer/index.html");
+  mainWindow.webContents.openDevTools({ mode: "detach" });
 
   // Open links in the system browser instead of inside Electron
   const { shell } = require("electron");
