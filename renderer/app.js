@@ -514,23 +514,35 @@ async function renderMessageList() {
     div.className = "msg-row" + (!m.seen ? " unread" : "") + (m.uid === currentUid ? " active" : "");
 
     // Color based on list membership
-    if (status === "blacklist") {
+    if (status === "whitelist") {
+      div.style.cssText = "background:#f8fafc;color:#0f172a;border-left:3px solid #3b82f6";
+    } else if (status === "watch") {
+      div.style.cssText = "background:#1a1a0a;color:#fef3c7;border-left:3px solid #f59e0b";
+    } else if (status === "blacklist") {
       div.style.cssText = "background:#450a0a;color:#fecaca;border-left:3px solid #ef4444";
     } else if (status === "greylist") {
       div.style.cssText = "background:#1e293b;color:#cbd5e1;border-left:3px solid #64748b";
     }
 
+    const subjectColor = status === "whitelist" ? "color:#1e293b" : status === "watch" ? "color:#fbbf24" : status === "blacklist" ? "color:#fca5a5" : status === "greylist" ? "color:#94a3b8" : "";
+    const fromColor = status === "whitelist" ? "color:#334155" : status === "watch" ? "color:#f59e0b" : "";
+    const dateColor = status === "whitelist" ? "color:#64748b" : "";
+    const badge = status === "whitelist" ? '<span style="color:#3b82f6;font-size:10px;font-weight:600">VIP</span>'
+      : status === "watch" ? '<span style="color:#f59e0b;font-size:10px">WATCH</span>'
+      : status === "blacklist" ? '<span style="color:#ef4444;font-size:10px">BLOCKED</span>'
+      : status === "greylist" ? '<span style="color:#64748b;font-size:10px">MUTED</span>'
+      : "";
+
     div.innerHTML = `
       <div class="msg-top">
-        <span class="msg-from">${escHtml(m.from?.name || m.from?.address || "Unknown")}</span>
-        <span class="msg-date">${formatDate(m.date)}</span>
+        <span class="msg-from" style="${fromColor}">${escHtml(m.from?.name || m.from?.address || "Unknown")}</span>
+        <span class="msg-date" style="${dateColor}">${formatDate(m.date)}</span>
       </div>
-      <div class="msg-subject" style="${status === "blacklist" ? "color:#fca5a5" : status === "greylist" ? "color:#94a3b8" : ""}">${escHtml(m.subject)}</div>
+      <div class="msg-subject" style="${subjectColor}">${escHtml(m.subject)}</div>
       <div class="msg-icons">
         ${m.flagged ? '<span class="star">&#9733;</span>' : ""}
         ${m.hasAttachments ? '<span class="clip">&#128206;</span>' : ""}
-        ${status === "blacklist" ? '<span style="color:#ef4444;font-size:10px">BLOCKED</span>' : ""}
-        ${status === "greylist" ? '<span style="color:#64748b;font-size:10px">GREY</span>' : ""}
+        ${badge}
       </div>
     `;
     div.addEventListener("click", () => openMessage(m.uid));
@@ -581,6 +593,20 @@ async function openMessage(uid) {
       <br>${formatDateFull(msg.date)}
     </div>
   `;
+
+  // Show sender list status
+  const statusEl = $("#senderStatus");
+  const senderAddr = msg.from?.address || "";
+  if (senderAddr && senderStatuses[senderAddr]) {
+    const s = senderStatuses[senderAddr];
+    const labels = { vip: "VIP", watch: "WATCHING", blocked: "BLOCKED", muted: "MUTED" };
+    const colors = { vip: "#3b82f6", watch: "#f59e0b", blocked: "#ef4444", muted: "#64748b" };
+    statusEl.textContent = labels[s] || s;
+    statusEl.style.cssText = `font-size:10px;padding:2px 6px;border-radius:3px;background:${colors[s] || "#334155"}22;color:${colors[s] || "#94a3b8"};border:1px solid ${colors[s] || "#334155"}66;font-weight:600`;
+  } else {
+    statusEl.textContent = "";
+    statusEl.style.cssText = "";
+  }
 
   // Star button
   const starred = currentMessages.find((m) => m.uid === uid)?.flagged;

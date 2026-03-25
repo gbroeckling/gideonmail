@@ -1648,6 +1648,10 @@ ipcMain.handle("security-api-keys-save", (_, keys) => {
 ipcMain.handle("security-scan", async (_, uid) => {
   try {
     const msg = await fetchMessage(uid);
+    // Skip spam filters for listed senders (except blocked)
+    if (_isSpamImmune(msg.from?.address, msg.from?.name)) {
+      return { flags: [], score: 0, details: ["Sender is on your trusted list — spam filters skipped"] };
+    }
     const filters = store.get("security_filters") || {};
     const apiKeys = { virustotal: store.get("api_virustotal"), safebrowsing: store.get("api_safebrowsing"), abuseipdb: store.get("api_abuseipdb") };
     // Fetch raw headers
@@ -1931,8 +1935,15 @@ function _senderListStatus(fromAddress, fromName) {
   const match = (list) => list.filter((w) => w.enabled).some((w) => w.address && (addr === w.address || addr.includes(w.address) || name.includes(w.address)));
   if (match(store.get("sms_blacklist") || [])) return "blacklist";
   if (match(store.get("sms_greylist") || [])) return "greylist";
+  if (match(store.get("ai_watchlist") || [])) return "watch";
   if (match(store.get("sms_whitelist") || [])) return "whitelist";
   return null;
+}
+
+// Anyone on VIP, Watch, or Muted list is immune from spam filters (only Blocked gets filtered)
+function _isSpamImmune(fromAddress, fromName) {
+  const status = _senderListStatus(fromAddress, fromName);
+  return status && status !== "blacklist";
 }
 
 ipcMain.handle("sender-list-status", (_, fromAddress, fromName) => {
