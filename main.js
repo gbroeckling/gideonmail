@@ -1125,14 +1125,38 @@ async function aiChat(message, emailContext) {
   const account = store.get("account") || {};
   const instructions = getInstructionsBlock();
 
+  // Sanitize history: remove orphaned tool_use messages without matching tool_result
+  function sanitizeHistory() {
+    const clean = [];
+    for (let i = 0; i < conversationHistory.length; i++) {
+      const msg = conversationHistory[i];
+      // Check if this is an assistant message with tool_use
+      if (msg.role === "assistant" && Array.isArray(msg.content) && msg.content.some(b => b.type === "tool_use")) {
+        // Next message must be a user message with tool_result
+        const next = conversationHistory[i + 1];
+        if (next && next.role === "user" && Array.isArray(next.content) && next.content.some(b => b.type === "tool_result")) {
+          clean.push(msg);
+        } else {
+          // Orphaned tool_use — skip it
+          continue;
+        }
+      } else {
+        clean.push(msg);
+      }
+    }
+    return clean;
+  }
+
   conversationHistory.push({ role: "user", content: message });
   if (conversationHistory.length > 20) conversationHistory = conversationHistory.slice(-20);
+  conversationHistory = sanitizeHistory();
 
   const systemMsg = (emailContext
     ? `You are a personal email assistant for ${account.displayName || "the user"} (${account.email || ""}). You are currently looking at an email (UID: ${emailContext.uid || "unknown"}).\nFrom: ${emailContext.from?.name || ""} <${emailContext.from?.address || ""}>\nSubject: ${emailContext.subject}\nDate: ${emailContext.date}\n\nEmail body:\n${(emailContext.text || emailContext.html?.replace(/<[^>]+>/g, " ") || "").substring(0, 2000)}`
     : `You are a personal email assistant for ${account.displayName || "the user"} (${account.email || ""}).`)
-    + `\n\nYou can take actions on emails using tools: forward, reply, delete, flag, mark read/unread, and send new emails. When the user asks you to do something, USE THE TOOLS — don't just say you can't. Always confirm what you did after taking action.${instructions}`;
+    + `\n\nYou can take actions on emails using tools: forward, reply, delete, flag, mark read/unread, search mailbox, and bulk delete. When the user asks you to do something, USE THE TOOLS — don't just say you can't. Always confirm what you did after taking action.${instructions}`;
 
+  try {
   let response = await client.messages.create({
     model: "claude-haiku-4-5-20251001",
     max_tokens: 1024,
@@ -1180,6 +1204,11 @@ async function aiChat(message, emailContext) {
   conversationHistory.push({ role: "assistant", content: response.content });
 
   return fullReply || "Done.";
+  } catch (e) {
+    // Clear corrupted history on API error
+    conversationHistory = [];
+    throw e;
+  }
 }
 
 ipcMain.handle("ai-get-key", () => {
