@@ -784,6 +784,41 @@ const EMAIL_TOOLS = [
       required: ["to", "subject", "body"],
     },
   },
+  {
+    name: "search_emails",
+    description: "Search the mailbox for emails matching a query. Searches subject, from, to, and body. Returns a list of matching emails with their UIDs. Use this when the user wants to find, list, or act on multiple emails.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search text to match against subject, from, to, or body" },
+        folder: { type: "string", description: "Folder to search in. Default: INBOX" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "delete_multiple_emails",
+    description: "Delete multiple emails by their UIDs. Use after search_emails to bulk delete matching messages. Always search first to find the UIDs.",
+    input_schema: {
+      type: "object",
+      properties: {
+        uids: { type: "array", items: { type: "number" }, description: "Array of email UIDs to delete" },
+        reason: { type: "string", description: "Brief reason for deletion (for confirmation message)" },
+      },
+      required: ["uids"],
+    },
+  },
+  {
+    name: "read_email_by_uid",
+    description: "Fetch and read the full content of a specific email by its UID. Use when you need to see the body of an email found via search.",
+    input_schema: {
+      type: "object",
+      properties: {
+        uid: { type: "number", description: "The email UID to read" },
+      },
+      required: ["uid"],
+    },
+  },
 ];
 
 // Execute a tool call
@@ -835,6 +870,63 @@ async function executeEmailTool(toolName, toolInput, emailContext) {
     case "send_new_email": {
       await sendMail({ to: toolInput.to, subject: toolInput.subject, text: toolInput.body, html: toolInput.body.replace(/\n/g, "<br>") });
       return { success: true, message: `Email sent to ${toolInput.to}` };
+    }
+    case "search_emails": {
+      const folder = toolInput.folder || "INBOX";
+      const client = await getImapClient();
+      const lock = await client.getMailboxLock(folder);
+      try {
+        const uids = await client.search(
+          { or: [{ subject: toolInput.query }, { from: toolInput.query }, { to: toolInput.query }, { body: toolInput.query }] },
+          { uid: true }
+        );
+        if (!uids.length) return { success: true, results: [], message: "No emails found matching: " + toolInput.query };
+        const results = [];
+        const uidRange = uids.slice(-50).join(",");
+        for await (const msg of client.fetch(uidRange, { envelope: true, flags: true, uid: true })) {
+          results.push({
+            uid: msg.uid,
+            subject: msg.envelope.subject || "(no subject)",
+            from: `${msg.envelope.from?.[0]?.name || ""} <${msg.envelope.from?.[0]?.address || ""}>`,
+            date: msg.envelope.date?.toISOString(),
+            seen: msg.flags?.has("\\Seen") || false,
+          });
+        }
+        results.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+        return { success: true, results, message: `Found ${results.length} emails matching "${toolInput.query}"` };
+      } finally {
+        lock.release();
+      }
+    }
+    case "delete_multiple_emails": {
+      if (!toolInput.uids || !toolInput.uids.length) return { error: "No UIDs provided" };
+      const client = await getImapClient();
+      const lock = await client.getMailboxLock("INBOX");
+      try {
+        const uidRange = toolInput.uids.join(",");
+        await client.messageFlagsAdd(uidRange, ["\\Deleted"], { uid: true });
+        await client.messageDelete(uidRange, { uid: true });
+        return { success: true, message: `Deleted ${toolInput.uids.length} emails${toolInput.reason ? " (" + toolInput.reason + ")" : ""}` };
+      } finally {
+        lock.release();
+      }
+    }
+    case "read_email_by_uid": {
+      try {
+        const msg = await fetchMessage(toolInput.uid);
+        const bodyText = msg.text || msg.html?.replace(/<[^>]+>/g, " ").substring(0, 2000) || "(empty)";
+        return {
+          success: true,
+          uid: msg.uid,
+          subject: msg.subject,
+          from: `${msg.from?.name || ""} <${msg.from?.address || ""}>`,
+          date: msg.date,
+          body_preview: bodyText.substring(0, 1000),
+          attachments: (msg.attachments || []).map(a => a.filename),
+        };
+      } catch (e) {
+        return { error: `Could not read email ${toolInput.uid}: ${e.message}` };
+      }
     }
     default:
       return { error: `Unknown tool: ${toolName}` };
