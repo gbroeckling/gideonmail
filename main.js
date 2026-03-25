@@ -401,7 +401,24 @@ async function searchMessages(query) {
 
 // ── IDLE (push notifications + AI triage + SMS) ────────────────────────────
 let idleActive = false;
-let lastSeenUids = new Set();
+
+// Persistent tracking: which UIDs we've already sent SMS for
+function _getSmsSentUids() {
+  return new Set(store.get("sms_sent_uids") || []);
+}
+function _addSmsSentUid(uid) {
+  const uids = store.get("sms_sent_uids") || [];
+  uids.push(uid);
+  // Keep last 500 to prevent unbounded growth
+  if (uids.length > 500) uids.splice(0, uids.length - 500);
+  store.set("sms_sent_uids", uids);
+}
+function _getLastCheckTime() {
+  return store.get("sms_last_check_time") || null;
+}
+function _setLastCheckTime() {
+  store.set("sms_last_check_time", new Date().toISOString());
+}
 
 // ── SMS delivery with smart settings ────────────────────────────────────
 let _smsSentToday = 0;
@@ -418,7 +435,8 @@ function _getSmsSettings() {
     quietEnd:      store.get("sms_quiet_end") ?? 7,          // hour (24h) — don't text before this
     maxPerHour:    store.get("sms_max_per_hour") || 10,
     maxPerDay:     store.get("sms_max_per_day") || 30,
-    prefix:        store.get("sms_prefix") || "GideonMail",  // prefix on each SMS
+    prefix:        store.get("sms_prefix") || "GideonMail",
+    historyHours:  store.get("sms_history_hours") || 4,
   };
 }
 
@@ -583,12 +601,29 @@ function _formatEmailForSms(msg, format) {
 }
 
 async function autoTriageNewMail(messages) {
-  // Find new unread messages we haven't seen before
-  const newMsgs = messages.filter((m) => !m.seen && !lastSeenUids.has(m.uid));
-  if (!newMsgs.length) return;
+  // Use persistent tracking — survives app restarts
+  const sentUids = _getSmsSentUids();
+  const lookbackHours = store.get("sms_history_hours") || 4;
+  const cutoff = new Date(Date.now() - lookbackHours * 3600000).toISOString();
 
-  // Update seen set
-  for (const m of messages) lastSeenUids.add(m.uid);
+  // Find unread messages that:
+  // 1. We haven't already sent SMS for (persistent)
+  // 2. Arrived within the lookback window
+  const newMsgs = messages.filter((m) => {
+    if (m.seen) return false;
+    if (sentUids.has(m.uid)) return false;
+    if (m.date && m.date < cutoff) return false; // too old
+    return true;
+  });
+  if (!newMsgs.length) { _setLastCheckTime(); return; }
+
+  // Debounce: wait 30 seconds before sending to avoid duplicate sends
+  // on rapid open/close cycles
+  const lastCheck = _getLastCheckTime();
+  if (lastCheck) {
+    const sinceLast = Date.now() - new Date(lastCheck).getTime();
+    if (sinceLast < 30000) { return; } // checked less than 30s ago, skip
+  }
 
   // Desktop notification for any new mail
   if (Notification.isSupported()) {
@@ -621,10 +656,10 @@ async function autoTriageNewMail(messages) {
         const s = _getSmsSettings();
         if (s.batchMultiple) {
           const summary = whitelistAlerts.map((m) => _formatEmailForSms(m, s.format)).join(" | ");
-          try { await sendSMS(`VIP: ${summary}`); } catch (e) { console.error("Whitelist SMS failed:", e.message); }
+          try { await sendSMS(`VIP: ${summary}`); whitelistAlerts.forEach((m) => _addSmsSentUid(m.uid)); } catch (e) { console.error("Whitelist SMS failed:", e.message); }
         } else {
           for (const m of whitelistAlerts) {
-            try { await sendSMS(`VIP: ${_formatEmailForSms(m, s.format)}`); } catch (e) { console.error("Whitelist SMS failed:", e.message); }
+            try { await sendSMS(`VIP: ${_formatEmailForSms(m, s.format)}`); _addSmsSentUid(m.uid); } catch (e) { console.error("Whitelist SMS failed:", e.message); }
           }
         }
       }
@@ -640,6 +675,7 @@ async function autoTriageNewMail(messages) {
           `${a.from}: ${a.subject} (you replied ${a.replyCount}x)`
         ).join("\n");
         await sendSMS(`GideonMail: ${conversationAlerts.length} email${conversationAlerts.length > 1 ? "s" : ""} in active conversations:\n${summary}`);
+        conversationAlerts.forEach((a) => _addSmsSentUid(a.uid));
       }
     } catch (e) {
       console.error("Conversation check failed:", e.message);
@@ -678,10 +714,14 @@ Be very selective — only flag truly urgent emails.${getInstructionsBlock()}`,
       }).join("\n");
 
       await sendSMS(`GideonMail: ${urgentLines.length} urgent email${urgentLines.length > 1 ? "s" : ""}:\n${urgentSummary}`);
+      newMsgs.slice(0, urgentLines.length).forEach((m) => _addSmsSentUid(m.uid));
     }
   } catch (e) {
     console.error("AI auto-triage failed:", e.message);
   }
+
+  // Mark check time
+  _setLastCheckTime();
 }
 
 async function startIdle() {
@@ -693,11 +733,13 @@ async function startIdle() {
     const client = await getImapClient();
     idleActive = true;
 
-    // Seed the seen-UIDs set with current inbox
+    // On startup: fetch inbox and check for emails that arrived while app was closed
     try {
       const initial = await fetchInbox(0, 50);
-      for (const m of (initial.messages || [])) lastSeenUids.add(m.uid);
       mainWindow?.webContents?.send("inbox-updated", initial);
+      // Process any emails that arrived while app was closed
+      // The persistent sentUids tracking prevents double-sends
+      await autoTriageNewMail(initial.messages || []);
     } catch (e) {}
 
     // Re-check inbox on configured interval
@@ -1321,6 +1363,7 @@ ipcMain.handle("sms-settings-save", (_, cfg) => {
   if (cfg.maxPerHour !== undefined) store.set("sms_max_per_hour", cfg.maxPerHour);
   if (cfg.maxPerDay !== undefined) store.set("sms_max_per_day", cfg.maxPerDay);
   if (cfg.prefix !== undefined) store.set("sms_prefix", cfg.prefix);
+  if (cfg.historyHours !== undefined) store.set("sms_history_hours", cfg.historyHours);
   return { ok: true };
 });
 

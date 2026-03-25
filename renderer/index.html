@@ -120,6 +120,9 @@
         <input type="number" id="cfgQuietEnd" value="7" min="0" max="23" style="width:50px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" />
         <span>:00</span>
       </div>
+      <div style="padding:6px 20px;font-size:11px;color:var(--fg2);font-weight:600">History Lookback</div>
+      <label>Check emails from last N hours on startup<input type="number" id="cfgSmsHistory" value="4" min="1" max="72" /></label>
+      <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">When app starts, catches up on emails that arrived while it was closed. Won't re-send for emails already texted.</div>
       <div style="padding:6px 20px;font-size:11px;color:var(--fg2);font-weight:600">Rate Limits</div>
       <label>Max SMS per hour<input type="number" id="cfgSmsMaxHour" value="10" min="1" max="100" /></label>
       <label>Max SMS per day<input type="number" id="cfgSmsMaxDay" value="30" min="1" max="500" /></label>

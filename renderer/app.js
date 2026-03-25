@@ -474,6 +474,7 @@ async function openSettings() {
   $("#cfgQuietEnd").value = smsSett.quietEnd ?? 7;
   $("#cfgSmsMaxHour").value = smsSett.maxPerHour || 10;
   $("#cfgSmsMaxDay").value = smsSett.maxPerDay || 30;
+  $("#cfgSmsHistory").value = smsSett.historyHours || 4;
   $("#cfgTestResult").textContent = "";
   $("#settingsModal").style.display = "flex";
   renderWhitelist();
@@ -526,6 +527,7 @@ async function saveSettingsQuiet() {
     quietEnd: parseInt($("#cfgQuietEnd").value) ?? 7,
     maxPerHour: parseInt($("#cfgSmsMaxHour").value) || 10,
     maxPerDay: parseInt($("#cfgSmsMaxDay").value) || 30,
+    historyHours: parseInt($("#cfgSmsHistory").value) || 4,
   });
   await gideon.convoSaveConfig({
     enabled: $("#cfgConvoEnabled").checked,
