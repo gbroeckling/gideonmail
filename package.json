@@ -1,7 +1,7 @@
 {
   "name": "gideonmail",
-  "version": "0.1.0",
-  "description": "A clean, fast, stable desktop email client for IMAP/SMTP",
+  "version": "0.2.0",
+  "description": "AI-powered desktop email client for IMAP/SMTP — triage, SMS alerts, calendar, security",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

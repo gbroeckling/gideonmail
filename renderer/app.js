@@ -1668,5 +1668,149 @@ async function checkPendingAppointments() {
   }
 }
 
+// ── Setup Wizard ────────────────────────────────────────────────────────────
+const WIZARD_STEPS = [
+  {
+    title: "Welcome to GideonMail",
+    body: () => `
+      <div style="text-align:center;padding:20px 0">
+        <div style="font-size:40px;margin-bottom:12px">&#10024;</div>
+        <div style="font-size:16px;font-weight:700;color:var(--fg);margin-bottom:8px">Your AI-powered email assistant</div>
+        <div style="font-size:13px;color:var(--fg2);line-height:1.6">
+          GideonMail connects to your IMAP email server and adds AI triage,<br>
+          SMS alerts, calendar integration, and smart sender management.<br><br>
+          Let's set up your connections.
+        </div>
+      </div>`,
+    validate: () => true,
+  },
+  {
+    title: "Email Account",
+    body: () => `
+      <div style="font-size:12px;color:var(--fg2);margin-bottom:12px">Connect to your IMAP/SMTP email server. This is required.</div>
+      <div style="font-size:11px;color:var(--accent);margin-bottom:8px">Already configured? Skip this step.</div>
+      <div style="font-size:11px;color:var(--fg2)">Configure your email account in <strong>Settings</strong> (gear icon in the sidebar). You need:<br>
+      &bull; IMAP host, port, and credentials<br>
+      &bull; SMTP host and port for sending<br><br>
+      Your ISPConfig server typically uses port 143 (IMAP) and 587 (SMTP).</div>`,
+    validate: () => true,
+  },
+  {
+    title: "AI Assistant (Anthropic)",
+    body: () => `
+      <div style="font-size:12px;color:var(--fg2);margin-bottom:12px">Power up GideonMail with AI email triage, smart replies, and analysis.</div>
+      <div style="padding:10px;background:var(--bg2);border-radius:6px;margin-bottom:10px">
+        <div style="font-size:11px;font-weight:600;color:var(--accent);margin-bottom:6px">How to get your API key:</div>
+        <div style="font-size:11px;color:var(--fg2);line-height:1.6">
+          1. Go to <strong style="color:var(--fg)">console.anthropic.com</strong><br>
+          2. Sign up or log in<br>
+          3. Go to <strong style="color:var(--fg)">Settings → API Keys → Create Key</strong><br>
+          4. Copy the key (starts with <code style="color:var(--accent)">sk-ant-</code>)<br>
+          5. Add $5 credit under <strong style="color:var(--fg)">Settings → Billing</strong><br>
+          6. Paste the key in <strong style="color:var(--fg)">Settings → Anthropic API Key</strong>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--fg2)">Cost: ~$0.003 per email triage. $5 lasts months of normal use.</div>`,
+    validate: () => true,
+  },
+  {
+    title: "SMS Notifications (Textbelt)",
+    body: () => `
+      <div style="font-size:12px;color:var(--fg2);margin-bottom:12px">Get texted when important emails arrive — even when GideonMail is minimized.</div>
+      <div style="padding:10px;background:var(--bg2);border-radius:6px;margin-bottom:10px">
+        <div style="font-size:11px;font-weight:600;color:var(--warm);margin-bottom:6px">How to set up SMS:</div>
+        <div style="font-size:11px;color:var(--fg2);line-height:1.6">
+          1. Go to <strong style="color:var(--fg)">textbelt.com</strong><br>
+          2. Buy an API key ($10 = 1,000 texts to Canada/US)<br>
+          3. In Settings, enter your <strong style="color:var(--fg)">phone number</strong> and <strong style="color:var(--fg)">Textbelt key</strong><br>
+          4. Click <strong style="color:var(--fg)">Send Test SMS</strong> to verify
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--fg2)">SMS triggers: VIP senders, AI urgency detection, meeting detection, conversation alerts.</div>`,
+    validate: () => true,
+  },
+  {
+    title: "Google Calendar",
+    body: () => `
+      <div style="font-size:12px;color:var(--fg2);margin-bottom:12px">Create calendar events from emails with one click. See your schedule when booking.</div>
+      <div style="padding:10px;background:var(--bg2);border-radius:6px;margin-bottom:10px">
+        <div style="font-size:11px;font-weight:600;color:var(--warm);margin-bottom:6px">How to connect Google Calendar:</div>
+        <div style="font-size:11px;color:var(--fg2);line-height:1.6">
+          1. Go to <strong style="color:var(--fg)">console.cloud.google.com</strong><br>
+          2. Create a project (or use existing)<br>
+          3. <strong style="color:var(--fg)">APIs & Services → Library</strong> → enable <strong style="color:var(--fg)">Google Calendar API</strong><br>
+          4. <strong style="color:var(--fg)">APIs & Services → Credentials → Create → OAuth 2.0 Client ID</strong><br>
+          5. Type: <strong style="color:var(--fg)">Web application</strong><br>
+          6. Authorized redirect URI: <code style="color:var(--accent)">http://localhost:39847/oauth/callback</code><br>
+          7. Copy <strong style="color:var(--fg)">Client ID</strong> and <strong style="color:var(--fg)">Client Secret</strong><br>
+          8. Paste both in <strong style="color:var(--fg)">Settings → Google Calendar</strong> → click <strong style="color:var(--fg)">Connect</strong>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--fg2)">Free. Uses OAuth with refresh tokens — stays connected permanently.</div>`,
+    validate: () => true,
+  },
+  {
+    title: "You're all set!",
+    body: () => `
+      <div style="text-align:center;padding:20px 0">
+        <div style="font-size:40px;margin-bottom:12px">&#9989;</div>
+        <div style="font-size:16px;font-weight:700;color:var(--success);margin-bottom:12px">GideonMail is ready</div>
+        <div style="font-size:12px;color:var(--fg2);line-height:1.8">
+          <strong style="color:var(--fg)">Quick tips:</strong><br>
+          &#9776; <strong>Rules</strong> — manage People (VIP/Watch/Blocked/Muted), AI instructions, security filters<br>
+          &#10024; <strong>AI</strong> — triage inbox, analyze emails, draft replies, search & delete<br>
+          &#128197; <strong>Task</strong> — create calendar events from emails with conflict detection<br>
+          &#128737; <strong>Scan</strong> — run security filters on any email<br>
+          Drag emails to folders on the left to organize<br>
+          Use "Add sender to..." dropdown when reading any email
+        </div>
+      </div>`,
+    validate: () => true,
+  },
+];
+
+let wizardCurrentStep = 0;
+
+function showWizard() {
+  wizardCurrentStep = 0;
+  renderWizardStep();
+  $("#wizardModal").style.display = "flex";
+}
+
+function renderWizardStep() {
+  const step = WIZARD_STEPS[wizardCurrentStep];
+  $("#wizardTitle").textContent = step.title;
+  $("#wizardStep").textContent = `Step ${wizardCurrentStep + 1} of ${WIZARD_STEPS.length}`;
+  $("#wizardBody").innerHTML = step.body();
+  $("#wizardBack").style.display = wizardCurrentStep === 0 ? "none" : "";
+  $("#wizardNext").textContent = wizardCurrentStep === WIZARD_STEPS.length - 1 ? "Get Started" : "Next";
+  $("#wizardSkip").style.display = wizardCurrentStep === WIZARD_STEPS.length - 1 ? "none" : "";
+}
+
+function bindWizardEvents() {
+  $("#wizardNext").addEventListener("click", () => {
+    if (wizardCurrentStep < WIZARD_STEPS.length - 1) {
+      wizardCurrentStep++;
+      renderWizardStep();
+    } else {
+      $("#wizardModal").style.display = "none";
+      localStorage.setItem("gideonmail_wizard_done", "1");
+    }
+  });
+  $("#wizardBack").addEventListener("click", () => {
+    if (wizardCurrentStep > 0) { wizardCurrentStep--; renderWizardStep(); }
+  });
+  $("#wizardSkip").addEventListener("click", () => {
+    $("#wizardModal").style.display = "none";
+    localStorage.setItem("gideonmail_wizard_done", "1");
+  });
+  // Help button re-opens wizard
+  $("#btnHelp").addEventListener("click", showWizard);
+}
+
 // ── Boot ────────────────────────────────────────────────────────────────────
+bindWizardEvents();
+if (!localStorage.getItem("gideonmail_wizard_done")) {
+  setTimeout(showWizard, 500);
+}
 init();
