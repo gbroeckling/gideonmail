@@ -16,6 +16,24 @@ const autoLauncher = new AutoLaunch({ name: "GideonMail", isHidden: true });
 
 bayesianFilter = new security.BayesianFilter(store);
 
+// Auto-backup config on startup (keep last 3 backups)
+function backupConfig() {
+  try {
+    const fs = require("fs");
+    const configDir = path.join(require("os").homedir(), "AppData", "Roaming", "gideonmail");
+    const configFile = path.join(configDir, "gideonmail-config.json");
+    if (!fs.existsSync(configFile)) return;
+    const backupFile = path.join(configDir, `gideonmail-config.backup-${Date.now()}.json`);
+    fs.copyFileSync(configFile, backupFile);
+    // Keep only last 3 backups
+    const backups = fs.readdirSync(configDir).filter((f) => f.startsWith("gideonmail-config.backup-")).sort().reverse();
+    for (const old of backups.slice(3)) {
+      fs.unlinkSync(path.join(configDir, old));
+    }
+  } catch (e) { /* non-fatal */ }
+}
+backupConfig();
+
 let mainWindow = null;
 let tray = null;
 let imapClient = null;
@@ -801,12 +819,18 @@ ipcMain.handle("get-account", () => {
 });
 
 ipcMain.handle("save-account", async (_, cfg) => {
-  // If password is masked, keep the old one
-  const existing = store.get("account");
-  if (cfg.password === "••••••••" && existing?.password) {
-    cfg.password = existing.password;
+  // Merge with existing — never overwrite with empty values
+  const existing = store.get("account") || {};
+  const merged = { ...existing };
+  for (const [k, v] of Object.entries(cfg)) {
+    if (v === "••••••••") continue; // masked password, keep old
+    if (v === "" || v === undefined || v === null) continue; // empty, keep old
+    merged[k] = v;
   }
-  store.set("account", cfg);
+  // Preserve booleans (checkboxes can be false legitimately)
+  if (cfg.imapSecure !== undefined) merged.imapSecure = cfg.imapSecure;
+  if (cfg.smtpSecure !== undefined) merged.smtpSecure = cfg.smtpSecure;
+  store.set("account", merged);
 
   // Disconnect old client
   if (imapClient) {
@@ -1366,13 +1390,14 @@ ipcMain.handle("ai-verify-key", async () => {
 ipcMain.handle("sms-get-config", () => {
   return {
     smsTo: store.get("sms_to") || "",
-    textbeltKey: store.get("textbelt_key") || "",
+    textbeltKey: store.get("textbelt_key") ? "••••••••" : "",
   };
 });
 
 ipcMain.handle("sms-save-config", (_, cfg) => {
-  if (cfg.smsTo !== undefined) store.set("sms_to", cfg.smsTo);
-  if (cfg.textbeltKey !== undefined) store.set("textbelt_key", cfg.textbeltKey);
+  // Never overwrite with empty — only update if value is non-empty or explicitly clearing
+  if (cfg.smsTo) store.set("sms_to", cfg.smsTo);
+  if (cfg.textbeltKey && cfg.textbeltKey !== "••••••••") store.set("textbelt_key", cfg.textbeltKey);
   return { ok: true };
 });
 
