@@ -18,13 +18,21 @@ async function init() {
   bindAIEvents();
 
   const account = await gideon.getAccount();
-  if (!account) {
+  if (!account || !account.imapHost) {
     openSettings();
     return;
   }
 
-  await loadFolders();
-  await loadMessages();
+  try {
+    await loadFolders();
+  } catch (e) {
+    console.error("loadFolders failed:", e);
+  }
+  try {
+    await loadMessages();
+  } catch (e) {
+    console.error("loadMessages failed:", e);
+  }
   checkPendingAppointments();
 }
 
