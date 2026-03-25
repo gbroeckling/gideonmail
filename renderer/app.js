@@ -453,6 +453,15 @@ async function openSettings() {
   $("#cfgConvoLookback").value = convoCfg.lookbackMonths || 6;
   $("#cfgConvoInterval").value = convoCfg.checkIntervalMin || 60;
   $("#cfgConvoResult").textContent = "";
+  const smsSett = await gideon.smsSettingsGet();
+  $("#cfgSmsFormat").value = smsSett.format || "sender_subject";
+  $("#cfgSmsMaxLen").value = smsSett.maxLength || 160;
+  $("#cfgSmsPrefix").value = smsSett.prefix || "GideonMail";
+  $("#cfgSmsBatch").checked = smsSett.batchMultiple !== false;
+  $("#cfgQuietStart").value = smsSett.quietStart ?? 22;
+  $("#cfgQuietEnd").value = smsSett.quietEnd ?? 7;
+  $("#cfgSmsMaxHour").value = smsSett.maxPerHour || 10;
+  $("#cfgSmsMaxDay").value = smsSett.maxPerDay || 30;
   $("#cfgTestResult").textContent = "";
   $("#settingsModal").style.display = "flex";
   renderWhitelist();
@@ -494,6 +503,16 @@ async function saveSettingsQuiet() {
   await gideon.smsSaveConfig({
     smsTo: $("#cfgSmsTo").value.trim(),
     textbeltKey: $("#cfgTextbeltKey").value.trim(),
+  });
+  await gideon.smsSettingsSave({
+    format: $("#cfgSmsFormat").value,
+    maxLength: parseInt($("#cfgSmsMaxLen").value) || 160,
+    prefix: $("#cfgSmsPrefix").value.trim(),
+    batchMultiple: $("#cfgSmsBatch").checked,
+    quietStart: parseInt($("#cfgQuietStart").value) ?? 22,
+    quietEnd: parseInt($("#cfgQuietEnd").value) ?? 7,
+    maxPerHour: parseInt($("#cfgSmsMaxHour").value) || 10,
+    maxPerDay: parseInt($("#cfgSmsMaxDay").value) || 30,
   });
   await gideon.convoSaveConfig({
     enabled: $("#cfgConvoEnabled").checked,

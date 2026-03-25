@@ -384,17 +384,88 @@ async function searchMessages(query) {
 let idleActive = false;
 let lastSeenUids = new Set();
 
+// ── SMS delivery with smart settings ────────────────────────────────────
+let _smsSentToday = 0;
+let _smsSentHour = 0;
+let _smsLastHourReset = Date.now();
+let _smsLastDayReset = new Date().toDateString();
+
+function _getSmsSettings() {
+  return {
+    maxLength:     store.get("sms_max_length") || 160,      // chars per SMS (160 = 1 segment on Textbelt)
+    format:        store.get("sms_format") || "sender_subject", // sender_subject | subject_only | full_preview
+    batchMultiple: store.get("sms_batch") !== false,         // combine multiple emails into one SMS
+    quietStart:    store.get("sms_quiet_start") ?? 22,       // hour (24h) — don't text after this
+    quietEnd:      store.get("sms_quiet_end") ?? 7,          // hour (24h) — don't text before this
+    maxPerHour:    store.get("sms_max_per_hour") || 10,
+    maxPerDay:     store.get("sms_max_per_day") || 30,
+    prefix:        store.get("sms_prefix") || "GideonMail",  // prefix on each SMS
+  };
+}
+
+function _isQuietHours() {
+  const s = _getSmsSettings();
+  const hour = new Date().getHours();
+  if (s.quietStart > s.quietEnd) {
+    // e.g. 22-7 wraps midnight
+    return hour >= s.quietStart || hour < s.quietEnd;
+  }
+  return hour >= s.quietStart && hour < s.quietEnd;
+}
+
+function _checkRateLimit() {
+  const s = _getSmsSettings();
+  const now = Date.now();
+  const today = new Date().toDateString();
+
+  // Reset hourly counter
+  if (now - _smsLastHourReset > 3600000) {
+    _smsSentHour = 0;
+    _smsLastHourReset = now;
+  }
+  // Reset daily counter
+  if (today !== _smsLastDayReset) {
+    _smsSentToday = 0;
+    _smsLastDayReset = today;
+  }
+
+  if (_smsSentHour >= s.maxPerHour) return "Hourly SMS limit reached";
+  if (_smsSentToday >= s.maxPerDay) return "Daily SMS limit reached";
+  return null;
+}
+
+function formatSmsMessage(rawMessage) {
+  const s = _getSmsSettings();
+  const prefix = s.prefix ? s.prefix + ": " : "";
+  const msg = prefix + rawMessage;
+  return msg.substring(0, s.maxLength);
+}
+
 async function sendSMS(message) {
   const phone = store.get("sms_to");
   if (!phone) return;
 
-  const key = store.get("textbelt_key") || "textbelt"; // "textbelt" = 1 free/day
+  // Quiet hours check
+  if (_isQuietHours()) {
+    console.log("SMS suppressed — quiet hours");
+    return;
+  }
+
+  // Rate limit check
+  const limitMsg = _checkRateLimit();
+  if (limitMsg) {
+    console.log("SMS suppressed —", limitMsg);
+    return;
+  }
+
+  const key = store.get("textbelt_key") || "textbelt";
   const digits = phone.replace(/\D/g, "");
   const fullNumber = digits.startsWith("1") ? digits : "1" + digits;
+  const formatted = formatSmsMessage(message);
 
   try {
     const https = require("https");
-    const postData = JSON.stringify({ phone: fullNumber, message: message.substring(0, 160), key });
+    const postData = JSON.stringify({ phone: fullNumber, message: formatted, key });
 
     await new Promise((resolve, reject) => {
       const req = https.request({
@@ -407,7 +478,7 @@ async function sendSMS(message) {
         res.on("data", (d) => { body += d; });
         res.on("end", () => {
           const r = JSON.parse(body);
-          if (r.success) resolve(r);
+          if (r.success) { _smsSentHour++; _smsSentToday++; resolve(r); }
           else reject(new Error(r.error || "SMS send failed"));
         });
       });
@@ -481,6 +552,17 @@ async function checkActiveConversations(newMsgs) {
   return alerts;
 }
 
+function _formatEmailForSms(msg, format) {
+  const from = msg.from?.name || msg.from?.address || "Unknown";
+  const subject = msg.subject || "(no subject)";
+  switch (format) {
+    case "subject_only": return subject;
+    case "full_preview": return `${from}: ${subject}`;
+    case "sender_subject":
+    default: return `${from} — ${subject}`;
+  }
+}
+
 async function autoTriageNewMail(messages) {
   // Find new unread messages we haven't seen before
   const newMsgs = messages.filter((m) => !m.seen && !lastSeenUids.has(m.uid));
@@ -517,12 +599,15 @@ async function autoTriageNewMail(messages) {
         }
       }
       if (whitelistAlerts.length > 0) {
-        const summary = whitelistAlerts.map((m) =>
-          `${m.from?.name || m.from?.address}: ${m.subject}`
-        ).join("\n");
-        try {
-          await sendSMS(`GideonMail VIP:\n${summary}`);
-        } catch (e) { console.error("Whitelist SMS failed:", e.message); }
+        const s = _getSmsSettings();
+        if (s.batchMultiple) {
+          const summary = whitelistAlerts.map((m) => _formatEmailForSms(m, s.format)).join(" | ");
+          try { await sendSMS(`VIP: ${summary}`); } catch (e) { console.error("Whitelist SMS failed:", e.message); }
+        } else {
+          for (const m of whitelistAlerts) {
+            try { await sendSMS(`VIP: ${_formatEmailForSms(m, s.format)}`); } catch (e) { console.error("Whitelist SMS failed:", e.message); }
+          }
+        }
       }
     }
   }
@@ -1160,6 +1245,21 @@ ipcMain.handle("sms-test", async (_, msg) => {
     await sendSMS(msg || "GideonMail test: SMS notifications are working.");
     return { ok: true };
   } catch (e) { return { error: e.message }; }
+});
+
+// ── SMS Delivery Settings ────────────────────────────────────────────────
+ipcMain.handle("sms-settings-get", () => _getSmsSettings());
+
+ipcMain.handle("sms-settings-save", (_, cfg) => {
+  if (cfg.maxLength !== undefined) store.set("sms_max_length", cfg.maxLength);
+  if (cfg.format !== undefined) store.set("sms_format", cfg.format);
+  if (cfg.batchMultiple !== undefined) store.set("sms_batch", cfg.batchMultiple);
+  if (cfg.quietStart !== undefined) store.set("sms_quiet_start", cfg.quietStart);
+  if (cfg.quietEnd !== undefined) store.set("sms_quiet_end", cfg.quietEnd);
+  if (cfg.maxPerHour !== undefined) store.set("sms_max_per_hour", cfg.maxPerHour);
+  if (cfg.maxPerDay !== undefined) store.set("sms_max_per_day", cfg.maxPerDay);
+  if (cfg.prefix !== undefined) store.set("sms_prefix", cfg.prefix);
+  return { ok: true };
 });
 
 // ── SMS Whitelist (always text for these senders) ───────────────────────

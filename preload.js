@@ -29,6 +29,10 @@ contextBridge.exposeInMainWorld("gideon", {
   aiChat:        (msg, ctx)      => ipcRenderer.invoke("ai-chat", msg, ctx),
   aiClearHistory:()              => ipcRenderer.invoke("ai-clear-history"),
 
+  // SMS Delivery Settings
+  smsSettingsGet:  ()    => ipcRenderer.invoke("sms-settings-get"),
+  smsSettingsSave: (cfg) => ipcRenderer.invoke("sms-settings-save", cfg),
+
   // SMS Whitelist
   whitelistGet:    ()          => ipcRenderer.invoke("whitelist-get"),
   whitelistAdd:    (entry)     => ipcRenderer.invoke("whitelist-add", entry),
