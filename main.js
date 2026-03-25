@@ -767,6 +767,17 @@ async function autoTriageNewMail(messages) {
                   req.write(body); req.end();
                 });
                 console.log(`Watchlist: auto-created calendar event for ${msg.from?.address}: ${event.title}`);
+                // Windows notification for auto-created event
+                const { Notification } = require("electron");
+                if (Notification.isSupported()) {
+                  const n = new Notification({
+                    title: "Calendar Event Added",
+                    body: `${event.title}\n${event.date} ${event.startTime || ""}–${event.endTime || ""}`,
+                    silent: false,
+                  });
+                  n.show();
+                  n.on("click", () => { mainWindow?.show(); mainWindow?.focus(); });
+                }
               }
             } catch (e) { console.error("Watchlist auto-calendar failed:", e.message); }
           }
@@ -828,12 +839,12 @@ async function autoTriageNewMail(messages) {
             // Notify the renderer
             mainWindow?.webContents?.send("pending-appointment", { uid: m.uid, subject: m.subject, from: m.from });
 
-            // Windows notification for meeting detection (separate from email notifications)
-            const { Notification } = require("electron");
-            if (Notification.isSupported()) {
-              const n = new Notification({
-                title: "Meeting Detected",
-                body: `${m.from?.name || m.from?.address}: ${m.subject}`,
+            // Windows notification for pending meeting
+            const { Notification: Notif } = require("electron");
+            if (Notif.isSupported()) {
+              const n = new Notif({
+                title: "Meeting Waiting for Calendar",
+                body: `${m.from?.name || m.from?.address}: ${m.subject}\nClick to review and add to calendar`,
                 silent: false,
               });
               n.show();
