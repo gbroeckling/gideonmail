@@ -40,6 +40,9 @@ contextBridge.exposeInMainWorld("gideon", {
   whitelistToggle: (id)        => ipcRenderer.invoke("whitelist-toggle", id),
   whitelistUpdate: (id, u)     => ipcRenderer.invoke("whitelist-update", id, u),
 
+  // Check Now (debug)
+  checkNow: () => ipcRenderer.invoke("check-now"),
+
   // Conversation Alerts
   convoGetConfig:  ()    => ipcRenderer.invoke("convo-get-config"),
   convoSaveConfig: (cfg) => ipcRenderer.invoke("convo-save-config", cfg),

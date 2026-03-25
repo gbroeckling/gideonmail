@@ -110,6 +110,14 @@ function bindEvents() {
     if (e.key === "Enter") $("#wlAddBtn").click();
   });
 
+  // Check Now
+  $("#rulesCheckNow").addEventListener("click", async () => {
+    $("#checkNowResult").textContent = "Checking...";
+    const r = await gideon.checkNow();
+    $("#checkNowResult").textContent = r.message;
+    $("#checkNowResult").style.color = r.ok ? "var(--success)" : "var(--danger)";
+  });
+
   // Rules save all
   $("#rulesSave").addEventListener("click", async () => {
     await saveRulesSettings();

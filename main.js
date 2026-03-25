@@ -1420,6 +1420,59 @@ ipcMain.handle("convo-save-config", (_, cfg) => {
   return { ok: true };
 });
 
+ipcMain.handle("check-now", async () => {
+  const log = [];
+  try {
+    log.push("Fetching inbox...");
+    const result = await fetchInbox(0, 50);
+    const allMsgs = result.messages || [];
+    log.push(`Total messages: ${allMsgs.length}`);
+
+    const sentUids = _getSmsSentUids();
+    const lookbackHours = store.get("sms_history_hours") || 4;
+    const cutoff = new Date(Date.now() - lookbackHours * 3600000).toISOString();
+    const unread = allMsgs.filter((m) => !m.seen && !sentUids.has(m.uid) && (!m.date || m.date >= cutoff));
+    log.push(`Unread in lookback window: ${unread.length}`);
+
+    // Whitelist check
+    const whitelist = (store.get("sms_whitelist") || []).filter((w) => w.enabled);
+    log.push(`Whitelist entries: ${whitelist.length}`);
+    let wlMatches = 0;
+    for (const msg of unread) {
+      const fromAddr = (msg.from?.address || "").toLowerCase();
+      const fromName = (msg.from?.name || "").toLowerCase();
+      for (const w of whitelist) {
+        if (w.address && (fromAddr === w.address || fromAddr.includes(w.address) || fromName.includes(w.address))) {
+          wlMatches++;
+          log.push(`  VIP match: ${msg.from?.address} → ${w.address}`);
+          break;
+        }
+      }
+    }
+    log.push(`VIP whitelist matches: ${wlMatches}`);
+
+    // SMS config check
+    const smsTo = store.get("sms_to");
+    const textbeltKey = store.get("textbelt_key");
+    log.push(`Phone: ${smsTo || "NOT SET"}`);
+    log.push(`Textbelt key: ${textbeltKey ? textbeltKey.substring(0, 8) + "..." : "NOT SET"}`);
+    log.push(`Quiet hours: ${_isQuietHours() ? "YES (suppressed)" : "No"}`);
+    log.push(`Rate limit: ${_checkRateLimit() || "OK"}`);
+
+    // Actually run the triage
+    if (unread.length > 0) {
+      log.push("Running full auto-triage...");
+      await autoTriageNewMail(allMsgs);
+      log.push("Done.");
+    }
+
+    return { ok: true, message: log.join("\n") };
+  } catch (e) {
+    log.push(`ERROR: ${e.message}`);
+    return { ok: false, message: log.join("\n") };
+  }
+});
+
 ipcMain.handle("convo-test", async () => {
   try {
     // Fetch latest inbox
