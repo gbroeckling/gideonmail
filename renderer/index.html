@@ -103,6 +103,7 @@
       <label>IMAP Host<input type="text" id="cfgImapHost" placeholder="mail.example.com" /></label>
       <label>IMAP Port<input type="number" id="cfgImapPort" value="993" /></label>
       <label><input type="checkbox" id="cfgImapSecure" checked /> Use SSL/TLS (IMAP)</label>
+      <div style="padding:4px 20px"><button id="cfgTest" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Test IMAP Connection</button> <span id="cfgTestResult" style="font-size:11px"></span></div>
       <hr>
       <label>SMTP Host<input type="text" id="cfgSmtpHost" placeholder="mail.example.com" /></label>
       <label>SMTP Port<input type="number" id="cfgSmtpPort" value="587" /></label>
@@ -128,8 +129,6 @@
       <label><input type="checkbox" id="cfgAutoLaunch" /> Start GideonMail on Windows login (minimized to tray)</label>
       <hr>
       <div class="settings-actions">
-        <button id="cfgTest">Test Connection</button>
-        <span id="cfgTestResult"></span>
         <button id="cfgSave" class="send-btn">Save</button>
       </div>
     </div>

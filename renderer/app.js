@@ -334,15 +334,26 @@ function bindEvents() {
 
   // Google Calendar OAuth
   $("#cfgGcalConnect").addEventListener("click", async () => {
-    await saveSettingsQuiet(); // save client ID/secret first
-    $("#cfgGcalStatus").textContent = "Opening browser...";
-    $("#cfgGcalStatus").style.color = "#f59e0b";
-    const r = await gideon.gcalAuthorize();
-    if (r.ok) {
-      $("#cfgGcalStatus").textContent = "Connected!";
-      $("#cfgGcalStatus").style.color = "#22c55e";
-    } else {
-      $("#cfgGcalStatus").textContent = "Failed: " + r.error;
+    try {
+      // Save credentials first
+      const id = $("#cfgGcalClientId").value.trim();
+      const secret = $("#cfgGcalSecret").value.trim();
+      if (!id || id === "••••••••" || !secret || secret === "••••••••") {
+        if (!id) { $("#cfgGcalStatus").textContent = "Enter Client ID first"; $("#cfgGcalStatus").style.color = "#ef4444"; return; }
+      }
+      await gideon.gcalSaveCredentials(id, secret);
+      $("#cfgGcalStatus").textContent = "Opening browser...";
+      $("#cfgGcalStatus").style.color = "#f59e0b";
+      const r = await gideon.gcalAuthorize();
+      if (r.ok) {
+        $("#cfgGcalStatus").textContent = "Connected!";
+        $("#cfgGcalStatus").style.color = "#22c55e";
+      } else {
+        $("#cfgGcalStatus").textContent = "Failed: " + (r.error || "Unknown error");
+        $("#cfgGcalStatus").style.color = "#ef4444";
+      }
+    } catch (e) {
+      $("#cfgGcalStatus").textContent = "Error: " + (e.message || e);
       $("#cfgGcalStatus").style.color = "#ef4444";
     }
   });
