@@ -1154,7 +1154,15 @@ async function aiChat(message, emailContext) {
   const systemMsg = (emailContext
     ? `You are a personal email assistant for ${account.displayName || "the user"} (${account.email || ""}). You are currently looking at an email (UID: ${emailContext.uid || "unknown"}).\nFrom: ${emailContext.from?.name || ""} <${emailContext.from?.address || ""}>\nSubject: ${emailContext.subject}\nDate: ${emailContext.date}\n\nEmail body:\n${(emailContext.text || emailContext.html?.replace(/<[^>]+>/g, " ") || "").substring(0, 2000)}`
     : `You are a personal email assistant for ${account.displayName || "the user"} (${account.email || ""}).`)
-    + `\n\nYou can take actions on emails using tools: forward, reply, delete, flag, mark read/unread, search mailbox, and bulk delete. When the user asks you to do something, USE THE TOOLS — don't just say you can't. Always confirm what you did after taking action.${instructions}`;
+    + `\n\nYou can take actions on emails using tools: forward, reply, delete, flag, mark read/unread, search mailbox, read any email by UID, and bulk delete. When the user asks you to do something, USE THE TOOLS — don't just say you can't. Always confirm what you did after taking action.
+
+IMPORTANT: When the user says "delete ALL" or "delete every" email matching something, you MUST:
+1. First use search_emails to find ALL matching emails
+2. Then use delete_multiple_emails with ALL the UIDs from the search results
+3. Do NOT use delete_email (single) — that only deletes one email
+
+When the user asks to find/search/list emails, use search_emails.
+When the user asks to read a specific email from search results, use read_email_by_uid.${instructions}`;
 
   try {
   let response = await client.messages.create({
