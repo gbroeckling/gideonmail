@@ -1,6 +1,20 @@
 const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell } = require("electron");
 app.setName("GideonMail");
 if (process.platform === "win32") app.setAppUserModelId("GideonMail");
+
+// Single instance lock — prevent multiple tray icons
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    // Someone tried to run a second instance — focus the existing window
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
 const path = require("path");
 const _esm = require("electron-store");
 const Store = _esm.default || _esm;
@@ -105,8 +119,9 @@ function createWindow() {
 
 // ── Tray ────────────────────────────────────────────────────────────────────
 function createTray() {
-  const iconPath = path.join(__dirname, "assets", "icon.png");
-  tray = new Tray(nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 }));
+  if (tray) { try { tray.destroy(); } catch (e) {} tray = null; }
+  const iconPath = path.join(__dirname, "assets", "icon-16.png");
+  tray = new Tray(nativeImage.createFromPath(iconPath));
   tray.setToolTip("GideonMail");
   tray.on("click", () => {
     if (mainWindow) {
@@ -2372,5 +2387,6 @@ app.on("activate", () => {
 });
 
 app.on("before-quit", async () => {
+  if (tray) { try { tray.destroy(); } catch (e) {} tray = null; }
   if (imapClient) { try { await imapClient.logout(); } catch (e) {} }
 });
