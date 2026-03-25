@@ -248,36 +248,6 @@ function bindEvents() {
   });
   $("#peopleAddAddr").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#peopleAddBtn").click(); });
 
-  // Watch list add (legacy)
-  if ($("#wlWatchAddBtn")) $("#wlWatchAddBtn").addEventListener("click", async () => {
-    const addr = $("#wlWatchAddr").value.trim();
-    if (!addr) return;
-    await gideon.watchlistAdd({ address: addr, name: $("#wlWatchName").value.trim() });
-    $("#wlWatchAddr").value = ""; $("#wlWatchName").value = "";
-    renderWatchlist();
-  });
-  $("#wlWatchAddr").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#wlWatchAddBtn").click(); });
-
-  // Blacklist add
-  $("#blAddBtn").addEventListener("click", async () => {
-    const addr = $("#blAddAddr").value.trim();
-    if (!addr) return;
-    await gideon.blacklistAdd({ address: addr, name: $("#blAddName").value.trim() });
-    $("#blAddAddr").value = ""; $("#blAddName").value = "";
-    renderManagedList("#blacklistEntries", gideon.blacklistGet, gideon.blacklistToggle, gideon.blacklistRemove, gideon.blacklistUpdate, "#ef4444");
-  });
-  $("#blAddAddr").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#blAddBtn").click(); });
-
-  // Greylist add
-  $("#glAddBtn").addEventListener("click", async () => {
-    const addr = $("#glAddAddr").value.trim();
-    if (!addr) return;
-    await gideon.greylistAdd({ address: addr, name: $("#glAddName").value.trim() });
-    $("#glAddAddr").value = ""; $("#glAddName").value = "";
-    renderManagedList("#greylistEntries", gideon.greylistGet, gideon.greylistToggle, gideon.greylistRemove, gideon.greylistUpdate, "#94a3b8");
-  });
-  $("#glAddAddr").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#glAddBtn").click(); });
-
   // Instructions add
   $("#instrAddBtn").addEventListener("click", async () => {
     const text = $("#instrAddInput").value.trim();
@@ -288,19 +258,6 @@ function bindEvents() {
   });
   $("#instrAddInput").addEventListener("keydown", (e) => {
     if (e.key === "Enter") $("#instrAddBtn").click();
-  });
-
-  // Whitelist add
-  $("#wlAddBtn").addEventListener("click", async () => {
-    const addr = $("#wlAddAddr").value.trim();
-    if (!addr) return;
-    await gideon.whitelistAdd({ address: addr, name: $("#wlAddName").value.trim() });
-    $("#wlAddAddr").value = "";
-    $("#wlAddName").value = "";
-    renderWhitelist();
-  });
-  $("#wlAddAddr").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") $("#wlAddBtn").click();
   });
 
   // Check Now
