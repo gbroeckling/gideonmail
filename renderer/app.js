@@ -628,15 +628,37 @@ async function aiDraftReplyCurrent() {
 
 async function aiSendChat() {
   const input = $("#aiInput");
+  const sendBtn = $("#aiSend");
   const msg = input.value.trim();
   if (!msg) return;
 
   input.value = "";
+  input.disabled = true;
+  sendBtn.disabled = true;
+  sendBtn.textContent = "...";
   addAIMessage(msg, "user");
+  addAIMessage("Working...", "system");
 
-  const result = await gideon.aiChat(msg, currentMsg || null);
-  if (result.error) addAIMessage("Error: " + result.error, "error");
-  else addAIMessage(result.text, "assistant");
+  try {
+    const result = await gideon.aiChat(msg, currentMsg || null);
+    // Remove the "Working..." message
+    const msgs = $("#aiMessages");
+    const last = msgs.lastElementChild;
+    if (last && last.textContent === "Working...") last.remove();
+
+    if (result.error) addAIMessage("Error: " + result.error, "error");
+    else addAIMessage(result.text, "assistant");
+  } catch (e) {
+    const msgs = $("#aiMessages");
+    const last = msgs.lastElementChild;
+    if (last && last.textContent === "Working...") last.remove();
+    addAIMessage("Error: " + (e.message || e), "error");
+  }
+
+  input.disabled = false;
+  sendBtn.disabled = false;
+  sendBtn.textContent = "Send";
+  input.focus();
 }
 
 // ── Standing Instructions ────────────────────────────────────────────────────
