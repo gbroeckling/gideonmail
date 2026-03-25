@@ -84,6 +84,29 @@ function updateTrayMenu() {
 }
 
 // ── IMAP ────────────────────────────────────────────────────────────────────
+let aiImapClient = null;
+
+// Dedicated IMAP connection for AI tool operations (search, bulk delete, read)
+// Never conflicts with the main connection's mailbox locks
+async function getAiImapClient() {
+  const cfg = store.get("account");
+  if (!cfg) throw new Error("No account configured");
+
+  if (aiImapClient && aiImapClient.usable) return aiImapClient;
+
+  aiImapClient = new ImapFlow({
+    host: cfg.imapHost,
+    port: cfg.imapPort || 993,
+    secure: cfg.imapSecure !== false,
+    auth: { user: cfg.username, pass: cfg.password },
+    logger: false,
+    tls: { rejectUnauthorized: false },
+  });
+
+  await aiImapClient.connect();
+  return aiImapClient;
+}
+
 async function getImapClient() {
   const cfg = store.get("account");
   if (!cfg) throw new Error("No account configured");
@@ -1060,15 +1083,8 @@ async function executeEmailTool(toolName, toolInput, emailContext) {
     }
     case "search_emails": {
       const folder = toolInput.folder || "INBOX";
-      const client = await getImapClient();
-      let lock;
-      try {
-        lock = await client.getMailboxLock(folder);
-      } catch (e) {
-        // Lock contention — wait and retry once
-        await new Promise((r) => setTimeout(r, 2000));
-        lock = await client.getMailboxLock(folder);
-      }
+      const client = await getAiImapClient();
+      const lock = await client.getMailboxLock(folder);
       try {
         // Search by subject first (most reliable across IMAP servers)
         let uids = await client.search({ subject: toolInput.query }, { uid: true });
@@ -1098,10 +1114,8 @@ async function executeEmailTool(toolName, toolInput, emailContext) {
     }
     case "delete_multiple_emails": {
       if (!toolInput.uids || !toolInput.uids.length) return { error: "No UIDs provided" };
-      const client = await getImapClient();
-      let lock;
-      try { lock = await client.getMailboxLock("INBOX"); }
-      catch (e) { await new Promise((r) => setTimeout(r, 2000)); lock = await client.getMailboxLock("INBOX"); }
+      const client = await getAiImapClient();
+      const lock = await client.getMailboxLock("INBOX");
       try {
         const uidRange = toolInput.uids.join(",");
         await client.messageFlagsAdd(uidRange, ["\\Deleted"], { uid: true });
@@ -1480,7 +1494,6 @@ app.on("activate", () => {
 });
 
 app.on("before-quit", async () => {
-  if (imapClient) {
-    try { await imapClient.logout(); } catch (e) {}
-  }
+  if (imapClient) { try { await imapClient.logout(); } catch (e) {} }
+  if (aiImapClient) { try { await aiImapClient.logout(); } catch (e) {} }
 });
