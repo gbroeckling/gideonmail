@@ -246,6 +246,35 @@ async function loadFolders() {
       loadMessages();
       loadFolders();
     });
+
+    // Drop target for drag-and-drop
+    div.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      div.style.background = "#1a3a2a";
+      div.style.borderColor = "#22c55e";
+    });
+    div.addEventListener("dragleave", () => {
+      div.style.background = "";
+      div.style.borderColor = "";
+    });
+    div.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      div.style.background = "";
+      div.style.borderColor = "";
+      const uid = e.dataTransfer.getData("text/uid");
+      const srcFolder = e.dataTransfer.getData("text/folder");
+      if (!uid || f.path === srcFolder) return;
+      div.style.background = "#0f2a1a";
+      const result = await gideon.moveMessage(parseInt(uid), srcFolder, f.path);
+      if (result.ok) {
+        loadMessages();
+        div.style.background = "";
+      } else {
+        div.style.background = "#2a0a0a";
+        setTimeout(() => { div.style.background = ""; }, 1000);
+      }
+    });
+
     list.appendChild(div);
   }
 }
@@ -309,6 +338,17 @@ async function renderMessageList() {
       </div>
     `;
     div.addEventListener("click", () => openMessage(m.uid));
+
+    // Draggable for move-to-folder
+    div.draggable = true;
+    div.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData("text/uid", String(m.uid));
+      e.dataTransfer.setData("text/folder", currentFolder);
+      e.dataTransfer.effectAllowed = "move";
+      div.style.opacity = "0.5";
+    });
+    div.addEventListener("dragend", () => { div.style.opacity = "1"; });
+
     list.appendChild(div);
   }
 }

@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("gideon", {
   sendMail:        (opts)       => ipcRenderer.invoke("send-mail", opts),
   deleteMessage:   (uid)        => ipcRenderer.invoke("delete-message", uid),
   toggleFlag:      (uid, flag)  => ipcRenderer.invoke("toggle-flag", uid, flag),
+  moveMessage:     (uid, src, dst) => ipcRenderer.invoke("move-message", uid, src, dst),
   listFolders:     ()           => ipcRenderer.invoke("list-folders"),
   fetchFolder:     (path, page) => ipcRenderer.invoke("fetch-folder", path, page),
   searchMessages:  (query)      => ipcRenderer.invoke("search-messages", query),

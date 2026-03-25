@@ -80,6 +80,9 @@ body {
 }
 .folder-item:hover { background: var(--bg2); }
 .folder-item.active { background: var(--bg2); color: var(--fg); font-weight: 600; }
+.folder-item.drag-over { background: #1a3a2a; outline: 2px dashed #22c55e; outline-offset: -2px; }
+.msg-row[draggable="true"] { cursor: grab; }
+.msg-row[draggable="true"]:active { cursor: grabbing; }
 .folder-badge {
   background: var(--accent);
   color: #fff;

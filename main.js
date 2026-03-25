@@ -901,6 +901,17 @@ ipcMain.handle("toggle-flag", async (_, uid, flag) => {
   }
 });
 
+ipcMain.handle("move-message", async (_, uid, sourceFolder, targetFolder) => {
+  try {
+    const client = await getImapClient();
+    const lock = await client.getMailboxLock(sourceFolder || "INBOX");
+    try {
+      await client.messageMove(String(uid), targetFolder, { uid: true });
+    } finally { lock.release(); }
+    return { ok: true };
+  } catch (e) { return { error: e.message }; }
+});
+
 ipcMain.handle("list-folders", async () => {
   try {
     return await listFolders();
