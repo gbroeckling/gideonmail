@@ -807,6 +807,18 @@ async function autoTriageNewMail(messages) {
             store.set("pending_appointments", pending);
             // Notify the renderer
             mainWindow?.webContents?.send("pending-appointment", { uid: m.uid, subject: m.subject, from: m.from });
+
+            // Windows notification for meeting detection (separate from email notifications)
+            const { Notification } = require("electron");
+            if (Notification.isSupported()) {
+              const n = new Notification({
+                title: "Meeting Detected",
+                body: `${m.from?.name || m.from?.address}: ${m.subject}`,
+                silent: false,
+              });
+              n.show();
+              n.on("click", () => { mainWindow?.show(); mainWindow?.focus(); });
+            }
           }
 
           try { await sendSMS(smsText); _addSmsSentUid(m.uid); } catch (e) { console.error("VIP SMS failed:", e.message); }
