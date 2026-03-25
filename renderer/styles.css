@@ -324,7 +324,7 @@ body {
   max-height: 85vh;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .modal-header {
@@ -601,6 +601,23 @@ body {
   outline: none;
 }
 .ai-input-row input:focus { border-color: #7c3aed; }
+
+/* ── Rules Panel ─────────────────────────────────────────── */
+.rules-tab {
+  flex: 1;
+  padding: 8px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg2);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.rules-tab:hover { color: var(--fg); background: var(--bg2); }
+.rules-tab.active { color: #22c55e; border-bottom-color: #22c55e; }
+
+.rules-section { padding-bottom: 8px; }
 
 /* ── Scrollbar ───────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; }

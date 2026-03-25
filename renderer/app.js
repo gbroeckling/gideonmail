@@ -69,7 +69,23 @@ function bindEvents() {
     $("#cfgAiResult").textContent = r.ok ? "Verified!" : "Failed: " + r.message;
     $("#cfgAiResult").style.color = r.ok ? "var(--success)" : "var(--danger)";
   });
-  // Instructions (Settings)
+  // ── Rules panel ────────────────────────────────────────────────────────
+  $("#btnRules").addEventListener("click", openRules);
+  $("#rulesClose").addEventListener("click", () => { $("#rulesModal").style.display = "none"; });
+
+  // Tab switching
+  for (const tab of $$(".rules-tab")) {
+    tab.addEventListener("click", () => {
+      $$(".rules-tab").forEach((t) => t.classList.remove("active"));
+      tab.classList.add("active");
+      const sections = { whitelist: "rulesWhitelist", instructions: "rulesInstructions", conversations: "rulesConversations", sms: "rulesSms" };
+      Object.values(sections).forEach((id) => { const el = $(`#${id}`); if (el) el.style.display = "none"; });
+      const target = sections[tab.dataset.tab];
+      if (target) $(`#${target}`).style.display = "block";
+    });
+  }
+
+  // Instructions add
   $("#instrAddBtn").addEventListener("click", async () => {
     const text = $("#instrAddInput").value.trim();
     if (!text) return;
@@ -81,7 +97,7 @@ function bindEvents() {
     if (e.key === "Enter") $("#instrAddBtn").click();
   });
 
-  // Whitelist
+  // Whitelist add
   $("#wlAddBtn").addEventListener("click", async () => {
     const addr = $("#wlAddAddr").value.trim();
     if (!addr) return;
@@ -92,6 +108,13 @@ function bindEvents() {
   });
   $("#wlAddAddr").addEventListener("keydown", (e) => {
     if (e.key === "Enter") $("#wlAddBtn").click();
+  });
+
+  // Rules save all
+  $("#rulesSave").addEventListener("click", async () => {
+    await saveRulesSettings();
+    $("#rulesSave").textContent = "Saved!";
+    setTimeout(() => { $("#rulesSave").textContent = "Save All"; }, 1500);
   });
 
   $("#cfgConvoTest").addEventListener("click", async () => {
@@ -465,20 +488,8 @@ async function openSettings() {
   $("#cfgConvoLookback").value = convoCfg.lookbackMonths || 6;
   $("#cfgConvoInterval").value = convoCfg.checkIntervalMin || 60;
   $("#cfgConvoResult").textContent = "";
-  const smsSett = await gideon.smsSettingsGet();
-  $("#cfgSmsFormat").value = smsSett.format || "sender_subject";
-  $("#cfgSmsMaxLen").value = smsSett.maxLength || 160;
-  $("#cfgSmsPrefix").value = smsSett.prefix || "GideonMail";
-  $("#cfgSmsBatch").checked = smsSett.batchMultiple !== false;
-  $("#cfgQuietStart").value = smsSett.quietStart ?? 22;
-  $("#cfgQuietEnd").value = smsSett.quietEnd ?? 7;
-  $("#cfgSmsMaxHour").value = smsSett.maxPerHour || 10;
-  $("#cfgSmsMaxDay").value = smsSett.maxPerDay || 30;
-  $("#cfgSmsHistory").value = smsSett.historyHours || 4;
   $("#cfgTestResult").textContent = "";
   $("#settingsModal").style.display = "flex";
-  renderWhitelist();
-  renderSettingsInstructions();
 }
 
 async function testConnection() {
@@ -518,6 +529,42 @@ async function saveSettingsQuiet() {
     smsTo: $("#cfgSmsTo").value.trim(),
     textbeltKey: $("#cfgTextbeltKey").value.trim(),
   });
+}
+
+async function saveSettings() {
+  await saveSettingsQuiet();
+  $("#settingsModal").style.display = "none";
+  loadFolders();
+  loadMessages();
+}
+
+// ── Rules Panel ─────────────────────────────────────────────────────────
+async function openRules() {
+  // Load all settings into the rules panel
+  const smsSett = await gideon.smsSettingsGet();
+  $("#cfgSmsFormat").value = smsSett.format || "sender_subject";
+  $("#cfgSmsMaxLen").value = smsSett.maxLength || 160;
+  $("#cfgSmsPrefix").value = smsSett.prefix || "GideonMail";
+  $("#cfgSmsBatch").checked = smsSett.batchMultiple !== false;
+  $("#cfgQuietStart").value = smsSett.quietStart ?? 22;
+  $("#cfgQuietEnd").value = smsSett.quietEnd ?? 7;
+  $("#cfgSmsMaxHour").value = smsSett.maxPerHour || 10;
+  $("#cfgSmsMaxDay").value = smsSett.maxPerDay || 30;
+  $("#cfgSmsHistory").value = smsSett.historyHours || 4;
+
+  const convoCfg = await gideon.convoGetConfig();
+  $("#cfgConvoEnabled").checked = convoCfg.enabled !== false;
+  $("#cfgConvoMinReplies").value = convoCfg.minReplies || 2;
+  $("#cfgConvoLookback").value = convoCfg.lookbackMonths || 6;
+  $("#cfgConvoInterval").value = convoCfg.checkIntervalMin || 60;
+  $("#cfgConvoResult").textContent = "";
+
+  $("#rulesModal").style.display = "flex";
+  renderWhitelist();
+  renderSettingsInstructions();
+}
+
+async function saveRulesSettings() {
   await gideon.smsSettingsSave({
     format: $("#cfgSmsFormat").value,
     maxLength: parseInt($("#cfgSmsMaxLen").value) || 160,
@@ -537,17 +584,11 @@ async function saveSettingsQuiet() {
   });
 }
 
-async function saveSettings() {
-  await saveSettingsQuiet();
-  $("#settingsModal").style.display = "none";
-  loadFolders();
-  loadMessages();
-}
-
 // ── Whitelist Management ────────────────────────────────────────────────
 async function renderWhitelist() {
   const list = await gideon.whitelistGet();
   const container = $("#whitelistEntries");
+  if (!container) { console.error("whitelistEntries element not found"); return; }
   container.innerHTML = "";
 
   // Header with count
@@ -614,6 +655,7 @@ async function renderWhitelist() {
 async function renderSettingsInstructions() {
   const list = await gideon.instructionsGet();
   const container = $("#instrEntries");
+  if (!container) { console.error("instrEntries element not found"); return; }
   container.innerHTML = "";
 
   const header = document.createElement("div");

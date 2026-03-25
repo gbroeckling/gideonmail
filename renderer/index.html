@@ -14,6 +14,7 @@
       <button id="btnCompose" class="compose-btn">Compose</button>
       <div id="folderList" class="folder-list"></div>
       <div class="sidebar-footer">
+        <button id="btnRules" class="icon-btn" title="Rules &amp; Alerts" style="color:#22c55e">&#9776;</button>
         <button id="btnAI" class="icon-btn" title="AI Assistant" style="color:#a78bfa">&#9733;</button>
         <button id="btnSettings" class="icon-btn" title="Settings">&#9881;</button>
         <button id="btnRefresh" class="icon-btn" title="Refresh">&#8635;</button>
@@ -94,67 +95,87 @@
       <label>Anthropic API Key<input type="password" id="cfgApiKey" placeholder="sk-ant-..." /></label>
       <div style="padding:4px 20px"><button id="cfgAiVerify" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Verify API Key</button> <span id="cfgAiResult" style="font-size:11px"></span></div>
       <hr>
-      <div style="padding:6px 20px;font-size:11px;color:#a78bfa;font-weight:600">SMS Notifications (via Textbelt)</div>
-      <label>Your Phone Number<input type="text" id="cfgSmsTo" placeholder="6049928450" /></label>
+      <label>Phone Number (SMS)<input type="text" id="cfgSmsTo" placeholder="6049928450" /></label>
       <label>Textbelt API Key<input type="text" id="cfgTextbeltKey" placeholder="Leave blank for 1 free SMS/day" /></label>
-      <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">Free: 1 SMS/day. Or get a key at <span style="color:var(--accent)">textbelt.com</span> ($10 = 1000 texts)</div>
       <div style="padding:4px 20px"><button id="cfgSmsTest" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Send Test SMS</button> <span id="cfgSmsResult" style="font-size:11px"></span></div>
-      <hr>
-      <div style="padding:6px 20px;font-size:11px;color:#a78bfa;font-weight:600">SMS Delivery Settings</div>
-      <label style="padding:6px 20px;font-size:12px;color:var(--fg2)">Message format
-        <select id="cfgSmsFormat" style="display:block;width:100%;margin-top:3px;padding:7px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:13px">
-          <option value="sender_subject">Sender — Subject (recommended)</option>
-          <option value="subject_only">Subject only</option>
-          <option value="full_preview">Sender: Subject</option>
-        </select>
-      </label>
-      <label>Max SMS length (chars)<input type="number" id="cfgSmsMaxLen" value="160" min="50" max="1600" /></label>
-      <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">160 = 1 SMS segment ($0.01). Longer texts cost more segments.</div>
-      <label>SMS prefix<input type="text" id="cfgSmsPrefix" value="GideonMail" /></label>
-      <label><input type="checkbox" id="cfgSmsBatch" checked /> Batch multiple emails into one SMS</label>
-      <div style="padding:6px 20px;font-size:11px;color:var(--fg2);font-weight:600">Quiet Hours (no texts)</div>
-      <div style="padding:4px 20px;display:flex;gap:8px;align-items:center;font-size:12px;color:var(--fg2)">
-        <span>From</span>
-        <input type="number" id="cfgQuietStart" value="22" min="0" max="23" style="width:50px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" />
-        <span>:00 to</span>
-        <input type="number" id="cfgQuietEnd" value="7" min="0" max="23" style="width:50px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" />
-        <span>:00</span>
-      </div>
-      <div style="padding:6px 20px;font-size:11px;color:var(--fg2);font-weight:600">History Lookback</div>
-      <label>Check emails from last N hours on startup<input type="number" id="cfgSmsHistory" value="4" min="1" max="72" /></label>
-      <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">When app starts, catches up on emails that arrived while it was closed. Won't re-send for emails already texted.</div>
-      <div style="padding:6px 20px;font-size:11px;color:var(--fg2);font-weight:600">Rate Limits</div>
-      <label>Max SMS per hour<input type="number" id="cfgSmsMaxHour" value="10" min="1" max="100" /></label>
-      <label>Max SMS per day<input type="number" id="cfgSmsMaxDay" value="30" min="1" max="500" /></label>
-      <hr>
-      <div style="padding:6px 20px;font-size:11px;color:#a78bfa;font-weight:600">VIP Whitelist — Always Text Me</div>
-      <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">Emails from these senders always trigger an SMS. Matches email address or name.</div>
-      <div id="whitelistEntries" style="padding:4px 20px;max-height:150px;overflow-y:auto"></div>
-      <div style="padding:4px 20px;display:flex;gap:6px">
-        <input type="text" id="wlAddAddr" placeholder="Email or name to match" style="flex:1;padding:5px 8px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:11px;outline:none" />
-        <input type="text" id="wlAddName" placeholder="Label (optional)" style="width:120px;padding:5px 8px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:11px;outline:none" />
-        <button id="wlAddBtn" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Add</button>
-      </div>
-      <hr>
-      <div style="padding:6px 20px;font-size:11px;color:#a78bfa;font-weight:600">AI Standing Instructions</div>
-      <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">Rules the AI follows every time it checks your email. Toggle, edit, or remove.</div>
-      <div id="instrEntries" style="padding:4px 20px;max-height:200px;overflow-y:auto"></div>
-      <div style="padding:4px 20px;display:flex;gap:6px">
-        <input type="text" id="instrAddInput" placeholder="e.g. Always flag emails from my accountant" style="flex:1;padding:5px 8px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:11px;outline:none" />
-        <button id="instrAddBtn" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Add</button>
-      </div>
-      <hr>
-      <div style="padding:6px 20px;font-size:11px;color:#a78bfa;font-weight:600">Conversation Alerts</div>
-      <label><input type="checkbox" id="cfgConvoEnabled" checked /> Enable conversation alerts</label>
-      <label>Min replies to trigger alert<input type="number" id="cfgConvoMinReplies" value="2" min="1" max="50" /></label>
-      <label>Lookback period (months)<input type="number" id="cfgConvoLookback" value="6" min="1" max="24" /></label>
-      <label>Check interval (minutes)<input type="number" id="cfgConvoInterval" value="60" min="5" max="1440" /></label>
-      <div style="padding:4px 20px"><button id="cfgConvoTest" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Test Conversation Alert Now</button> <span id="cfgConvoResult" style="font-size:11px;white-space:pre-wrap"></span></div>
       <hr>
       <div class="settings-actions">
         <button id="cfgTest">Test Connection</button>
         <span id="cfgTestResult"></span>
         <button id="cfgSave" class="send-btn">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rules & Alerts panel -->
+  <div id="rulesModal" class="modal" style="display:none">
+    <div class="modal-content" style="width:560px;max-height:85vh;overflow-y:auto">
+      <div class="modal-header">
+        <span>Rules &amp; Alerts</span>
+        <button id="rulesClose" class="icon-btn">&times;</button>
+      </div>
+      <div style="display:flex;border-bottom:1px solid var(--border)">
+        <button class="rules-tab active" data-tab="whitelist">VIP Senders</button>
+        <button class="rules-tab" data-tab="instructions">AI Instructions</button>
+        <button class="rules-tab" data-tab="conversations">Conversations</button>
+        <button class="rules-tab" data-tab="sms">SMS Settings</button>
+      </div>
+      <!-- VIP Whitelist -->
+      <div id="rulesWhitelist" class="rules-section">
+        <div style="padding:12px 16px;font-size:12px;color:var(--fg2)">Emails from these senders always trigger an SMS notification.</div>
+        <div id="whitelistEntries" style="padding:4px 16px;max-height:250px;overflow-y:auto"></div>
+        <div style="padding:8px 16px;display:flex;gap:6px">
+          <input type="text" id="wlAddAddr" placeholder="Email or name to match" style="flex:1;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
+          <input type="text" id="wlAddName" placeholder="Label" style="width:100px;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
+          <button id="wlAddBtn" class="send-btn" style="padding:6px 14px;font-size:12px">Add</button>
+        </div>
+      </div>
+      <!-- AI Instructions -->
+      <div id="rulesInstructions" class="rules-section" style="display:none">
+        <div style="padding:12px 16px;font-size:12px;color:var(--fg2)">Rules the AI follows every time it checks your email. You can also add these from the AI chat by clicking "Save as standing instruction" on any response you like.</div>
+        <div id="instrEntries" style="padding:4px 16px;max-height:250px;overflow-y:auto"></div>
+        <div style="padding:8px 16px;display:flex;gap:6px">
+          <input type="text" id="instrAddInput" placeholder="e.g. Always flag emails from my accountant" style="flex:1;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
+          <button id="instrAddBtn" class="send-btn" style="padding:6px 14px;font-size:12px">Add</button>
+        </div>
+      </div>
+      <!-- Conversation Alerts -->
+      <div id="rulesConversations" class="rules-section" style="display:none">
+        <div style="padding:12px 16px;font-size:12px;color:var(--fg2)">Get texted when someone replies to a conversation you've been active in.</div>
+        <div style="padding:8px 16px">
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)"><input type="checkbox" id="cfgConvoEnabled" checked /> Enable conversation alerts</label>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">Min replies to trigger<input type="number" id="cfgConvoMinReplies" value="2" min="1" max="50" style="width:60px;margin-left:8px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" /></label>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">Lookback (months)<input type="number" id="cfgConvoLookback" value="6" min="1" max="24" style="width:60px;margin-left:8px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" /></label>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">Check every (minutes)<input type="number" id="cfgConvoInterval" value="60" min="5" max="1440" style="width:60px;margin-left:8px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" /></label>
+          <div style="padding:8px 0"><button id="cfgConvoTest" class="ai-action-btn">Test Now</button> <span id="cfgConvoResult" style="font-size:11px;white-space:pre-wrap"></span></div>
+        </div>
+      </div>
+      <!-- SMS Settings -->
+      <div id="rulesSms" class="rules-section" style="display:none">
+        <div style="padding:12px 16px;font-size:12px;color:var(--fg2)">Control how SMS notifications are delivered.</div>
+        <div style="padding:8px 16px">
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">Format
+            <select id="cfgSmsFormat" style="margin-left:8px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px">
+              <option value="sender_subject">Sender — Subject</option>
+              <option value="subject_only">Subject only</option>
+              <option value="full_preview">Sender: Subject</option>
+            </select>
+          </label>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">Max length (chars)<input type="number" id="cfgSmsMaxLen" value="160" min="50" max="1600" style="width:70px;margin-left:8px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" /></label>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">Prefix<input type="text" id="cfgSmsPrefix" value="GideonMail" style="width:120px;margin-left:8px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" /></label>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)"><input type="checkbox" id="cfgSmsBatch" checked /> Batch multiple into one SMS</label>
+          <div style="padding:8px 0 4px;font-size:11px;color:var(--fg2);font-weight:600">Quiet Hours</div>
+          <div style="display:flex;gap:6px;align-items:center;padding:4px 0;font-size:12px;color:var(--fg2)">
+            From <input type="number" id="cfgQuietStart" value="22" min="0" max="23" style="width:45px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" />:00
+            to <input type="number" id="cfgQuietEnd" value="7" min="0" max="23" style="width:45px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" />:00
+          </div>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">Startup lookback (hours)<input type="number" id="cfgSmsHistory" value="4" min="1" max="72" style="width:60px;margin-left:8px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" /></label>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">Max per hour<input type="number" id="cfgSmsMaxHour" value="10" min="1" max="100" style="width:60px;margin-left:8px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" /></label>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">Max per day<input type="number" id="cfgSmsMaxDay" value="30" min="1" max="500" style="width:60px;margin-left:8px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" /></label>
+        </div>
+      </div>
+      <div style="padding:10px 16px;border-top:1px solid var(--border)">
+        <button id="rulesSave" class="send-btn" style="width:100%">Save All</button>
       </div>
     </div>
   </div>
