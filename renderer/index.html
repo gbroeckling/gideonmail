@@ -100,6 +100,15 @@
       <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">Free: 1 SMS/day. Or get a key at <span style="color:var(--accent)">textbelt.com</span> ($10 = 1000 texts)</div>
       <div style="padding:4px 20px"><button id="cfgSmsTest" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Send Test SMS</button> <span id="cfgSmsResult" style="font-size:11px"></span></div>
       <hr>
+      <div style="padding:6px 20px;font-size:11px;color:#a78bfa;font-weight:600">VIP Whitelist — Always Text Me</div>
+      <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">Emails from these senders always trigger an SMS. Matches email address or name.</div>
+      <div id="whitelistEntries" style="padding:4px 20px;max-height:150px;overflow-y:auto"></div>
+      <div style="padding:4px 20px;display:flex;gap:6px">
+        <input type="text" id="wlAddAddr" placeholder="Email or name to match" style="flex:1;padding:5px 8px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:11px;outline:none" />
+        <input type="text" id="wlAddName" placeholder="Label (optional)" style="width:120px;padding:5px 8px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:11px;outline:none" />
+        <button id="wlAddBtn" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Add</button>
+      </div>
+      <hr>
       <div style="padding:6px 20px;font-size:11px;color:#a78bfa;font-weight:600">Conversation Alerts</div>
       <label><input type="checkbox" id="cfgConvoEnabled" checked /> Enable conversation alerts</label>
       <label>Min replies to trigger alert<input type="number" id="cfgConvoMinReplies" value="2" min="1" max="50" /></label>

@@ -69,6 +69,19 @@ function bindEvents() {
     $("#cfgAiResult").textContent = r.ok ? "Verified!" : "Failed: " + r.message;
     $("#cfgAiResult").style.color = r.ok ? "var(--success)" : "var(--danger)";
   });
+  // Whitelist
+  $("#wlAddBtn").addEventListener("click", async () => {
+    const addr = $("#wlAddAddr").value.trim();
+    if (!addr) return;
+    await gideon.whitelistAdd({ address: addr, name: $("#wlAddName").value.trim() });
+    $("#wlAddAddr").value = "";
+    $("#wlAddName").value = "";
+    renderWhitelist();
+  });
+  $("#wlAddAddr").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") $("#wlAddBtn").click();
+  });
+
   $("#cfgConvoTest").addEventListener("click", async () => {
     $("#cfgConvoResult").textContent = "Checking...";
     $("#cfgConvoResult").style.color = "";
@@ -442,6 +455,7 @@ async function openSettings() {
   $("#cfgConvoResult").textContent = "";
   $("#cfgTestResult").textContent = "";
   $("#settingsModal").style.display = "flex";
+  renderWhitelist();
 }
 
 async function testConnection() {
@@ -494,6 +508,49 @@ async function saveSettings() {
   $("#settingsModal").style.display = "none";
   loadFolders();
   loadMessages();
+}
+
+// ── Whitelist Management ────────────────────────────────────────────────
+async function renderWhitelist() {
+  const list = await gideon.whitelistGet();
+  const container = $("#whitelistEntries");
+  container.innerHTML = "";
+
+  if (!list.length) {
+    container.innerHTML = '<div style="font-size:10px;color:var(--fg2);padding:4px 0">No VIP senders. Add one below.</div>';
+    return;
+  }
+
+  for (const item of list) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:6px;padding:3px 0;font-size:11px;border-bottom:1px solid var(--border)";
+
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = item.enabled;
+    toggle.addEventListener("change", async () => {
+      await gideon.whitelistToggle(item.id);
+      renderWhitelist();
+    });
+
+    const addr = document.createElement("span");
+    addr.style.cssText = `flex:1;color:${item.enabled ? "var(--fg)" : "var(--fg2)"};${item.enabled ? "" : "text-decoration:line-through"}`;
+    addr.textContent = item.name ? `${item.name} (${item.address})` : item.address;
+
+    const del = document.createElement("button");
+    del.style.cssText = "background:none;border:none;color:var(--fg2);cursor:pointer;font-size:12px;padding:0 4px";
+    del.textContent = "\u00d7";
+    del.title = "Remove";
+    del.addEventListener("click", async () => {
+      await gideon.whitelistRemove(item.id);
+      renderWhitelist();
+    });
+
+    row.appendChild(toggle);
+    row.appendChild(addr);
+    row.appendChild(del);
+    container.appendChild(row);
+  }
 }
 
 // ── AI Assistant ────────────────────────────────────────────────────────────

@@ -29,6 +29,13 @@ contextBridge.exposeInMainWorld("gideon", {
   aiChat:        (msg, ctx)      => ipcRenderer.invoke("ai-chat", msg, ctx),
   aiClearHistory:()              => ipcRenderer.invoke("ai-clear-history"),
 
+  // SMS Whitelist
+  whitelistGet:    ()          => ipcRenderer.invoke("whitelist-get"),
+  whitelistAdd:    (entry)     => ipcRenderer.invoke("whitelist-add", entry),
+  whitelistRemove: (id)        => ipcRenderer.invoke("whitelist-remove", id),
+  whitelistToggle: (id)        => ipcRenderer.invoke("whitelist-toggle", id),
+  whitelistUpdate: (id, u)     => ipcRenderer.invoke("whitelist-update", id, u),
+
   // Conversation Alerts
   convoGetConfig:  ()    => ipcRenderer.invoke("convo-get-config"),
   convoSaveConfig: (cfg) => ipcRenderer.invoke("convo-save-config", cfg),

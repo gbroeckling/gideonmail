@@ -500,8 +500,34 @@ async function autoTriageNewMail(messages) {
     n.on("click", () => { mainWindow?.show(); mainWindow?.focus(); });
   }
 
-  // ── Check for active conversations (replied 2+ times in 6 months) ──────
+  // ── Whitelist check (always SMS for these senders) ─────────────────────
   const smsTo = store.get("sms_to");
+  if (smsTo) {
+    const whitelist = (store.get("sms_whitelist") || []).filter((w) => w.enabled);
+    if (whitelist.length > 0) {
+      const whitelistAlerts = [];
+      for (const msg of newMsgs) {
+        const fromAddr = (msg.from?.address || "").toLowerCase();
+        const fromName = (msg.from?.name || "").toLowerCase();
+        for (const w of whitelist) {
+          if (w.address && (fromAddr === w.address || fromAddr.includes(w.address) || fromName.includes(w.address))) {
+            whitelistAlerts.push(msg);
+            break;
+          }
+        }
+      }
+      if (whitelistAlerts.length > 0) {
+        const summary = whitelistAlerts.map((m) =>
+          `${m.from?.name || m.from?.address}: ${m.subject}`
+        ).join("\n");
+        try {
+          await sendSMS(`GideonMail VIP:\n${summary}`);
+        } catch (e) { console.error("Whitelist SMS failed:", e.message); }
+      }
+    }
+  }
+
+  // ── Check for active conversations ────────────────────────────────────
   if (smsTo) {
     try {
       const conversationAlerts = await checkActiveConversations(newMsgs);
@@ -1134,6 +1160,50 @@ ipcMain.handle("sms-test", async (_, msg) => {
     await sendSMS(msg || "GideonMail test: SMS notifications are working.");
     return { ok: true };
   } catch (e) { return { error: e.message }; }
+});
+
+// ── SMS Whitelist (always text for these senders) ───────────────────────
+ipcMain.handle("whitelist-get", () => {
+  return store.get("sms_whitelist") || [];
+});
+
+ipcMain.handle("whitelist-add", (_, entry) => {
+  const list = store.get("sms_whitelist") || [];
+  list.push({
+    id: Date.now().toString(),
+    address: (entry.address || "").trim().toLowerCase(),
+    name: (entry.name || "").trim(),
+    enabled: true,
+    created: new Date().toISOString(),
+  });
+  store.set("sms_whitelist", list);
+  return list;
+});
+
+ipcMain.handle("whitelist-remove", (_, id) => {
+  let list = store.get("sms_whitelist") || [];
+  list = list.filter((i) => i.id !== id);
+  store.set("sms_whitelist", list);
+  return list;
+});
+
+ipcMain.handle("whitelist-toggle", (_, id) => {
+  const list = store.get("sms_whitelist") || [];
+  const item = list.find((i) => i.id === id);
+  if (item) item.enabled = !item.enabled;
+  store.set("sms_whitelist", list);
+  return list;
+});
+
+ipcMain.handle("whitelist-update", (_, id, updates) => {
+  const list = store.get("sms_whitelist") || [];
+  const item = list.find((i) => i.id === id);
+  if (item) {
+    if (updates.address !== undefined) item.address = updates.address.trim().toLowerCase();
+    if (updates.name !== undefined) item.name = updates.name.trim();
+  }
+  store.set("sms_whitelist", list);
+  return list;
 });
 
 // ── Conversation alert settings ─────────────────────────────────────────
