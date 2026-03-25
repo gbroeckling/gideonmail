@@ -778,13 +778,38 @@ async function autoTriageNewMail(messages) {
       }
       if (whitelistAlerts.length > 0) {
         const s = _getSmsSettings();
-        if (s.batchMultiple) {
-          const summary = whitelistAlerts.map((m) => _formatEmailForSms(m, s.format)).join(" | ");
-          try { await sendSMS(`VIP: ${summary}`); whitelistAlerts.forEach((m) => _addSmsSentUid(m.uid)); } catch (e) { console.error("Whitelist SMS failed:", e.message); }
-        } else {
-          for (const m of whitelistAlerts) {
-            try { await sendSMS(`VIP: ${_formatEmailForSms(m, s.format)}`); _addSmsSentUid(m.uid); } catch (e) { console.error("Whitelist SMS failed:", e.message); }
+        const detectMeetings = store.get("vip_detect_meetings") !== false;
+
+        for (const m of whitelistAlerts) {
+          let smsText = `VIP: ${_formatEmailForSms(m, s.format)}`;
+          let isMeeting = false;
+
+          // Meeting detection for VIP emails
+          if (detectMeetings && store.get("anthropic_api_key")) {
+            try {
+              const client = getAnthropicClient();
+              const resp = await client.messages.create({
+                model: "claude-haiku-4-5-20251001",
+                max_tokens: 50,
+                system: "Respond with ONLY 'MEETING' or 'NOT_MEETING'. A meeting is any email about a scheduled event, appointment, call, interview, or gathering with a specific date/time.",
+                messages: [{ role: "user", content: `From: ${m.from?.name || m.from?.address}\nSubject: ${m.subject}` }],
+              });
+              isMeeting = (resp.content[0]?.text || "").trim().toUpperCase().startsWith("MEETING");
+            } catch (e) { /* skip detection */ }
           }
+
+          if (isMeeting) {
+            smsText = `MEETING from ${m.from?.name || m.from?.address}: ${m.subject}`;
+            // Queue as pending appointment
+            const pending = store.get("pending_appointments") || [];
+            pending.push({ uid: m.uid, subject: m.subject, from: m.from, date: m.date, created: new Date().toISOString() });
+            if (pending.length > 20) pending.splice(0, pending.length - 20);
+            store.set("pending_appointments", pending);
+            // Notify the renderer
+            mainWindow?.webContents?.send("pending-appointment", { uid: m.uid, subject: m.subject, from: m.from });
+          }
+
+          try { await sendSMS(smsText); _addSmsSentUid(m.uid); } catch (e) { console.error("VIP SMS failed:", e.message); }
         }
       }
     }
@@ -2244,6 +2269,28 @@ ipcMain.handle("gcal-authorize", async () => {
 
 ipcMain.handle("gcal-disconnect", () => {
   googleAuth.disconnect();
+  return { ok: true };
+});
+
+// ── Pending appointments ─────────────────────────────────────────────────
+ipcMain.handle("pending-appointments-get", () => {
+  return store.get("pending_appointments") || [];
+});
+
+ipcMain.handle("pending-appointments-clear", (_, uid) => {
+  let list = store.get("pending_appointments") || [];
+  if (uid) list = list.filter((p) => p.uid !== uid);
+  else list = [];
+  store.set("pending_appointments", list);
+  return { ok: true };
+});
+
+ipcMain.handle("vip-meetings-get", () => {
+  return { enabled: store.get("vip_detect_meetings") !== false };
+});
+
+ipcMain.handle("vip-meetings-set", (_, enabled) => {
+  store.set("vip_detect_meetings", enabled);
   return { ok: true };
 });
 

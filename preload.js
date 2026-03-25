@@ -93,6 +93,13 @@ contextBridge.exposeInMainWorld("gideon", {
   convoSaveConfig: (cfg) => ipcRenderer.invoke("convo-save-config", cfg),
   convoTest:       ()    => ipcRenderer.invoke("convo-test"),
 
+  // Pending appointments
+  pendingAppointmentsGet:   () => ipcRenderer.invoke("pending-appointments-get"),
+  pendingAppointmentsClear: (uid) => ipcRenderer.invoke("pending-appointments-clear", uid),
+  vipMeetingsGet: () => ipcRenderer.invoke("vip-meetings-get"),
+  vipMeetingsSet: (on) => ipcRenderer.invoke("vip-meetings-set", on),
+  onPendingAppointment: (cb) => { ipcRenderer.on("pending-appointment", (_, data) => cb(data)); },
+
   // Calendar
   aiExtractEvent:    (email)  => ipcRenderer.invoke("ai-extract-event", email),
   gcalCreateEvent:   (event)  => ipcRenderer.invoke("gcal-create-event", event),

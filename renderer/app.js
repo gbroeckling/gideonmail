@@ -25,6 +25,7 @@ async function init() {
 
   await loadFolders();
   await loadMessages();
+  checkPendingAppointments();
 }
 
 function bindEvents() {
@@ -221,6 +222,11 @@ function bindEvents() {
     });
   }
 
+  // VIP meeting detection toggle
+  $("#cfgVipMeetings").addEventListener("change", async (e) => {
+    await gideon.vipMeetingsSet(e.target.checked);
+  });
+
   // People add
   $("#peopleAddBtn").addEventListener("click", async () => {
     const addr = $("#peopleAddAddr").value.trim();
@@ -309,6 +315,23 @@ function bindEvents() {
     $("#cfgConvoResult").textContent = r.message;
     $("#cfgConvoResult").style.color = r.ok ? "var(--success)" : "var(--danger)";
   });
+  // Pending appointments
+  $("#pendingAction").addEventListener("click", async () => {
+    if (!currentPendingUid) return;
+    $("#pendingAction").textContent = "Creating...";
+    // Open the email and trigger the Task flow
+    await openMessage(currentPendingUid);
+    await gideon.pendingAppointmentsClear(currentPendingUid);
+    // Trigger Task button
+    $("#btnTask").click();
+    checkPendingAppointments();
+  });
+  $("#pendingDismiss").addEventListener("click", async () => {
+    if (currentPendingUid) await gideon.pendingAppointmentsClear(currentPendingUid);
+    checkPendingAppointments();
+  });
+  gideon.onPendingAppointment(() => checkPendingAppointments());
+
   // Google Calendar OAuth
   $("#cfgGcalConnect").addEventListener("click", async () => {
     await saveSettingsQuiet(); // save client ID/secret first
@@ -1106,6 +1129,8 @@ async function openRules() {
   const ac = await gideon.autocheckGet();
   $("#sfAutoCheckInterval").value = String(ac.intervalMin || 120);
 
+  const vipMtg = await gideon.vipMeetingsGet();
+  $("#cfgVipMeetings").checked = vipMtg.enabled;
   $("#rulesModal").style.display = "flex";
   renderPeople();
   renderSettingsInstructions();
@@ -1506,6 +1531,22 @@ function formatSize(bytes) {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
   return (bytes / 1048576).toFixed(1) + " MB";
+}
+
+// ── Pending appointments banner ──────────────────────────────────────────
+let currentPendingUid = null;
+
+async function checkPendingAppointments() {
+  const pending = await gideon.pendingAppointmentsGet();
+  if (pending.length > 0) {
+    const p = pending[0];
+    currentPendingUid = p.uid;
+    $("#pendingText").textContent = `Meeting detected: "${p.subject}" from ${p.from?.name || p.from?.address || "unknown"}`;
+    $("#pendingBanner").style.display = "flex";
+  } else {
+    $("#pendingBanner").style.display = "none";
+    currentPendingUid = null;
+  }
 }
 
 // ── Boot ────────────────────────────────────────────────────────────────────
