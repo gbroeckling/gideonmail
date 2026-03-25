@@ -751,15 +751,23 @@ ipcMain.handle("ai-save-key", (_, key) => {
 
 ipcMain.handle("ai-verify-key", async () => {
   try {
+    const storedKey = store.get("anthropic_api_key") || "";
+    const keyPreview = storedKey ? `${storedKey.substring(0, 12)}...${storedKey.slice(-4)} (${storedKey.length} chars)` : "(empty)";
+
+    // Force recreate client with current key
+    anthropicClient = null;
     const client = getAnthropicClient();
+
     const response = await client.messages.create({
       model: "claude-3-haiku-20240307",
       max_tokens: 10,
       messages: [{ role: "user", content: "Say OK" }],
     });
-    return { ok: true, message: "API key verified" };
+    return { ok: true, message: `Verified! Key: ${keyPreview}` };
   } catch (e) {
-    return { ok: false, message: e.message };
+    const storedKey = store.get("anthropic_api_key") || "";
+    const keyPreview = storedKey ? `${storedKey.substring(0, 12)}...${storedKey.slice(-4)} (${storedKey.length} chars)` : "(empty)";
+    return { ok: false, message: `${e.status || ""} ${e.message}\nKey used: ${keyPreview}` };
   }
 });
 
