@@ -712,29 +712,195 @@ Match the tone of the original email (formal if formal, casual if casual).`,
   return response.content[0]?.text || "";
 }
 
+// Tools the AI can use to manage emails
+const EMAIL_TOOLS = [
+  {
+    name: "forward_email",
+    description: "Forward the current email to another address. Use when the user asks to forward, pass on, or share an email with someone.",
+    input_schema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "Email address to forward to" },
+        note: { type: "string", description: "Optional note to add above the forwarded message" },
+      },
+      required: ["to"],
+    },
+  },
+  {
+    name: "reply_to_email",
+    description: "Send a reply to the current email. Use when the user asks you to reply, respond, or write back.",
+    input_schema: {
+      type: "object",
+      properties: {
+        body: { type: "string", description: "The reply text" },
+        reply_all: { type: "boolean", description: "Reply to all recipients (true) or just sender (false)" },
+      },
+      required: ["body"],
+    },
+  },
+  {
+    name: "delete_email",
+    description: "Delete the current email. Use when the user asks to delete, remove, or trash an email.",
+    input_schema: {
+      type: "object",
+      properties: {
+        confirm: { type: "boolean", description: "Must be true to confirm deletion" },
+      },
+      required: ["confirm"],
+    },
+  },
+  {
+    name: "flag_email",
+    description: "Star/flag or unflag the current email. Use when user asks to star, flag, mark as important, or unflag.",
+    input_schema: {
+      type: "object",
+      properties: {
+        flagged: { type: "boolean", description: "true to flag, false to unflag" },
+      },
+      required: ["flagged"],
+    },
+  },
+  {
+    name: "mark_read_unread",
+    description: "Mark the current email as read or unread.",
+    input_schema: {
+      type: "object",
+      properties: {
+        read: { type: "boolean", description: "true for read, false for unread" },
+      },
+      required: ["read"],
+    },
+  },
+  {
+    name: "send_new_email",
+    description: "Compose and send a new email. Use when user asks to write, send, or compose a new message (not a reply).",
+    input_schema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "Recipient email address" },
+        subject: { type: "string", description: "Email subject" },
+        body: { type: "string", description: "Email body text" },
+      },
+      required: ["to", "subject", "body"],
+    },
+  },
+];
+
+// Execute a tool call
+async function executeEmailTool(toolName, toolInput, emailContext) {
+  const account = store.get("account") || {};
+
+  switch (toolName) {
+    case "forward_email": {
+      if (!emailContext) return { error: "No email open to forward" };
+      const fwdBody = (toolInput.note ? toolInput.note + "\n\n" : "")
+        + "---------- Forwarded message ----------\n"
+        + `From: ${emailContext.from?.name || ""} <${emailContext.from?.address || ""}>\n`
+        + `Date: ${emailContext.date}\n`
+        + `Subject: ${emailContext.subject}\n\n`
+        + (emailContext.text || emailContext.html?.replace(/<[^>]+>/g, " ") || "");
+      await sendMail({ to: toolInput.to, subject: `Fwd: ${emailContext.subject}`, text: fwdBody, html: fwdBody.replace(/\n/g, "<br>") });
+      return { success: true, message: `Forwarded to ${toolInput.to}` };
+    }
+    case "reply_to_email": {
+      if (!emailContext) return { error: "No email open to reply to" };
+      const replyTo = toolInput.reply_all
+        ? [emailContext.from, ...(emailContext.to || []), ...(emailContext.cc || [])].filter(t => t?.address).map(t => t.address).join(", ")
+        : emailContext.from?.address;
+      await sendMail({
+        to: replyTo,
+        subject: emailContext.subject?.startsWith("Re:") ? emailContext.subject : `Re: ${emailContext.subject}`,
+        text: toolInput.body,
+        html: toolInput.body.replace(/\n/g, "<br>"),
+        inReplyTo: emailContext.messageId,
+      });
+      return { success: true, message: `Reply sent to ${replyTo}` };
+    }
+    case "delete_email": {
+      if (!emailContext?.uid) return { error: "No email open to delete" };
+      if (!toolInput.confirm) return { error: "Deletion not confirmed" };
+      await deleteMessage(emailContext.uid);
+      return { success: true, message: "Email deleted" };
+    }
+    case "flag_email": {
+      if (!emailContext?.uid) return { error: "No email open" };
+      await toggleFlag(emailContext.uid, "flagged");
+      return { success: true, message: toolInput.flagged ? "Email flagged" : "Email unflagged" };
+    }
+    case "mark_read_unread": {
+      if (!emailContext?.uid) return { error: "No email open" };
+      await toggleFlag(emailContext.uid, "seen");
+      return { success: true, message: toolInput.read ? "Marked as read" : "Marked as unread" };
+    }
+    case "send_new_email": {
+      await sendMail({ to: toolInput.to, subject: toolInput.subject, text: toolInput.body, html: toolInput.body.replace(/\n/g, "<br>") });
+      return { success: true, message: `Email sent to ${toolInput.to}` };
+    }
+    default:
+      return { error: `Unknown tool: ${toolName}` };
+  }
+}
+
 async function aiChat(message, emailContext) {
   const client = getAnthropicClient();
   const account = store.get("account") || {};
+  const instructions = getInstructionsBlock();
 
   conversationHistory.push({ role: "user", content: message });
-  // Keep last 20 messages
   if (conversationHistory.length > 20) conversationHistory = conversationHistory.slice(-20);
 
-  const systemMsg = emailContext
-    ? `You are a personal email assistant for ${account.displayName || "the user"} (${account.email || ""}). You are currently looking at an email.\nFrom: ${emailContext.from?.name || ""} <${emailContext.from?.address || ""}>\nSubject: ${emailContext.subject}\nDate: ${emailContext.date}\n\nEmail body:\n${(emailContext.text || emailContext.html?.replace(/<[^>]+>/g, " ") || "").substring(0, 2000)}\n\nHelp the user with this email — summarize, draft replies, suggest actions, answer questions about it.`
-    : `You are a personal email assistant for ${account.displayName || "the user"} (${account.email || ""}). Help manage their email — triage, draft replies, suggest actions, answer questions. Be concise.`;
+  const systemMsg = (emailContext
+    ? `You are a personal email assistant for ${account.displayName || "the user"} (${account.email || ""}). You are currently looking at an email (UID: ${emailContext.uid || "unknown"}).\nFrom: ${emailContext.from?.name || ""} <${emailContext.from?.address || ""}>\nSubject: ${emailContext.subject}\nDate: ${emailContext.date}\n\nEmail body:\n${(emailContext.text || emailContext.html?.replace(/<[^>]+>/g, " ") || "").substring(0, 2000)}`
+    : `You are a personal email assistant for ${account.displayName || "the user"} (${account.email || ""}).`)
+    + `\n\nYou can take actions on emails using tools: forward, reply, delete, flag, mark read/unread, and send new emails. When the user asks you to do something, USE THE TOOLS — don't just say you can't. Always confirm what you did after taking action.${instructions}`;
 
-  const response = await client.messages.create({
+  let response = await client.messages.create({
     model: "claude-haiku-4-5-20251001",
     max_tokens: 1024,
     system: systemMsg,
     messages: conversationHistory,
+    tools: EMAIL_TOOLS,
   });
 
-  const reply = response.content[0]?.text || "No response";
-  conversationHistory.push({ role: "assistant", content: reply });
+  // Process tool calls in a loop
+  const actionLog = [];
+  while (response.stop_reason === "tool_use") {
+    const assistantContent = response.content;
+    conversationHistory.push({ role: "assistant", content: assistantContent });
 
-  return reply;
+    const toolResults = [];
+    for (const block of assistantContent) {
+      if (block.type === "tool_use") {
+        try {
+          const result = await executeEmailTool(block.name, block.input, emailContext);
+          actionLog.push(`${block.name}: ${result.message || result.error}`);
+          toolResults.push({ type: "tool_result", tool_use_id: block.id, content: JSON.stringify(result) });
+        } catch (e) {
+          actionLog.push(`${block.name}: ERROR ${e.message}`);
+          toolResults.push({ type: "tool_result", tool_use_id: block.id, content: JSON.stringify({ error: e.message }), is_error: true });
+        }
+      }
+    }
+
+    conversationHistory.push({ role: "user", content: toolResults });
+
+    response = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 1024,
+      system: systemMsg,
+      messages: conversationHistory,
+      tools: EMAIL_TOOLS,
+    });
+  }
+
+  const replyText = response.content.filter(b => b.type === "text").map(b => b.text).join("\n");
+  const fullReply = actionLog.length
+    ? `[Actions taken: ${actionLog.join(" | ")}]\n\n${replyText}`
+    : replyText;
+
+  conversationHistory.push({ role: "assistant", content: response.content });
+
+  return fullReply || "Done.";
 }
 
 ipcMain.handle("ai-get-key", () => {
