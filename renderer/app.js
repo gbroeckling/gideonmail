@@ -515,22 +515,22 @@ async function renderMessageList() {
 
     // Color based on list membership
     if (status === "whitelist") {
-      div.style.cssText = "background:#f8fafc;color:#0f172a;border-left:3px solid #3b82f6";
+      div.style.cssText = "background:#f0f0f2;color:#111113;border-left:3px solid #7c6cff";
     } else if (status === "watch") {
-      div.style.cssText = "background:#1a1a0a;color:#fef3c7;border-left:3px solid #f59e0b";
+      div.style.cssText = "background:#1c1a10;color:#fef3c7;border-left:3px solid #ff9f43";
     } else if (status === "blacklist") {
-      div.style.cssText = "background:#450a0a;color:#fecaca;border-left:3px solid #ef4444";
+      div.style.cssText = "background:#1a0a0a;color:#fecaca;border-left:3px solid #f06060";
     } else if (status === "greylist") {
-      div.style.cssText = "background:#1e293b;color:#cbd5e1;border-left:3px solid #64748b";
+      div.style.cssText = "background:#1a1a1f;color:#8b8b96;border-left:3px solid #55555e";
     }
 
-    const subjectColor = status === "whitelist" ? "color:#1e293b" : status === "watch" ? "color:#fbbf24" : status === "blacklist" ? "color:#fca5a5" : status === "greylist" ? "color:#94a3b8" : "";
-    const fromColor = status === "whitelist" ? "color:#334155" : status === "watch" ? "color:#f59e0b" : "";
-    const dateColor = status === "whitelist" ? "color:#64748b" : "";
-    const badge = status === "whitelist" ? '<span style="color:#3b82f6;font-size:10px;font-weight:600">VIP</span>'
-      : status === "watch" ? '<span style="color:#f59e0b;font-size:10px">WATCH</span>'
-      : status === "blacklist" ? '<span style="color:#ef4444;font-size:10px">BLOCKED</span>'
-      : status === "greylist" ? '<span style="color:#64748b;font-size:10px">MUTED</span>'
+    const subjectColor = status === "whitelist" ? "color:#2a2a32" : status === "watch" ? "color:#fbbf24" : status === "blacklist" ? "color:#fca5a5" : status === "greylist" ? "color:#55555e" : "";
+    const fromColor = status === "whitelist" ? "color:#444" : status === "watch" ? "color:#ff9f43" : "";
+    const dateColor = status === "whitelist" ? "color:#666" : "";
+    const badge = status === "whitelist" ? '<span style="color:#7c6cff;font-size:10px;font-weight:600">VIP</span>'
+      : status === "watch" ? '<span style="color:#ff9f43;font-size:10px">WATCH</span>'
+      : status === "blacklist" ? '<span style="color:#f06060;font-size:10px">BLOCKED</span>'
+      : status === "greylist" ? '<span style="color:#55555e;font-size:10px">MUTED</span>'
       : "";
 
     div.innerHTML = `
