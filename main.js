@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } = require("electron");
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell } = require("electron");
 app.setName("GideonMail");
 if (process.platform === "win32") app.setAppUserModelId("GideonMail");
 const path = require("path");
@@ -8,13 +8,16 @@ const { ImapFlow } = require("imapflow");
 const nodemailer = require("nodemailer");
 const { simpleParser } = require("mailparser");
 const security = require("./security");
+const GoogleAuth = require("./google-auth");
 let bayesianFilter = null;
+let googleAuth = null;
 
 const store = new Store({ name: "gideonmail-config" });
 const AutoLaunch = (() => { const m = require("auto-launch"); return m.default || m; })();
 const autoLauncher = new AutoLaunch({ name: "GideonMail", isHidden: true });
 
 bayesianFilter = new security.BayesianFilter(store);
+googleAuth = new GoogleAuth(store);
 
 // Auto-backup config on startup (keep last 3 backups)
 function backupConfig() {
@@ -665,6 +668,82 @@ async function autoTriageNewMail(messages) {
 
   // Run blacklist cleanup (delete emails > 1 week old from blacklisted senders)
   cleanupBlacklistedEmails().catch((e) => console.error("Blacklist cleanup:", e.message));
+
+  // ── AI Watch List (smart senders: AI analyze + actions) ────────────────
+  const watchlist = (store.get("ai_watchlist") || []).filter((w) => w.enabled);
+  if (watchlist.length > 0 && store.get("anthropic_api_key")) {
+    for (const msg of smsEligible) {
+      const fromAddr = (msg.from?.address || "").toLowerCase();
+      const fromName = (msg.from?.name || "").toLowerCase();
+      const match = watchlist.find((w) => w.address && (fromAddr === w.address || fromAddr.includes(w.address) || fromName.includes(w.address)));
+      if (!match) continue;
+
+      try {
+        // AI Analysis
+        if (match.actions?.aiAnalyze) {
+          const fullMsg = await fetchMessage(msg.uid);
+          const analysis = await aiAnalyzeEmail(fullMsg);
+
+          // SMS alert with AI summary
+          if (match.actions?.smsAlert && smsTo) {
+            await sendSMS(`WATCH [${match.name || match.address}]: ${analysis.substring(0, 120)}`);
+            _addSmsSentUid(msg.uid);
+          }
+
+          // Auto-calendar
+          if (match.actions?.autoCalendar && googleAuth?.isConnected) {
+            try {
+              const extracted = await new Promise((resolve) => {
+                ipcMain.emit("ai-extract-event", null, fullMsg);
+                // Use the extract function directly
+                resolve(null);
+              });
+              // Direct extraction
+              const client = getAnthropicClient();
+              const content = fullMsg.text || fullMsg.html?.replace(/<[^>]+>/g, " ").substring(0, 3000) || "";
+              const today = new Date().toISOString().split("T")[0];
+              const resp = await client.messages.create({
+                model: "claude-haiku-4-5-20251001",
+                max_tokens: 512,
+                system: `Extract calendar event details from this email. Today is ${today}. Return ONLY valid JSON: {"title":"","date":"YYYY-MM-DD","startTime":"HH:MM","endTime":"HH:MM","location":"","description":"","attendees":[]}. If no date, use tomorrow. If no time, use 09:00-10:00.`,
+                messages: [{ role: "user", content: `From: ${fullMsg.from?.name || ""} <${fullMsg.from?.address || ""}>\nSubject: ${fullMsg.subject}\n\n${content}` }],
+              });
+              const jsonMatch = (resp.content[0]?.text || "").match(/\{[\s\S]*\}/);
+              if (jsonMatch) {
+                const event = JSON.parse(jsonMatch[0]);
+                const token = await googleAuth.getToken();
+                const calId = store.get("google_calendar_id") || "primary";
+                const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+                const body = JSON.stringify({
+                  summary: event.title, description: event.description || "", location: event.location || "",
+                  start: { dateTime: `${event.date}T${event.startTime || "09:00"}:00`, timeZone: timezone },
+                  end: { dateTime: `${event.date}T${event.endTime || "10:00"}:00`, timeZone: timezone },
+                  attendees: (event.attendees || []).filter(Boolean).map((e) => ({ email: e })),
+                });
+                const https = require("https");
+                await new Promise((resolve) => {
+                  const req = https.request({
+                    hostname: "www.googleapis.com",
+                    path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events`,
+                    method: "POST",
+                    headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+                  }, (res) => { let d = ""; res.on("data", (c) => { d += c; }); res.on("end", () => resolve(d)); });
+                  req.on("error", () => resolve(null));
+                  req.write(body); req.end();
+                });
+                console.log(`Watchlist: auto-created calendar event for ${msg.from?.address}: ${event.title}`);
+              }
+            } catch (e) { console.error("Watchlist auto-calendar failed:", e.message); }
+          }
+
+          // Flag important
+          if (match.actions?.flagImportant) {
+            try { await toggleFlag(msg.uid, "flagged"); } catch (e) {}
+          }
+        }
+      } catch (e) { console.error("Watchlist processing failed:", e.message); }
+    }
+  }
 
   // ── Whitelist check (always SMS for these senders) ─────────────────────
   const smsTo = store.get("sms_to");
@@ -1591,6 +1670,56 @@ ipcMain.handle("whitelist-update", (_, id, updates) => {
   return list;
 });
 
+// ── AI Watch List (smart senders with per-sender actions) ───────────────
+ipcMain.handle("watchlist-get", () => store.get("ai_watchlist") || []);
+
+ipcMain.handle("watchlist-add", (_, entry) => {
+  const list = store.get("ai_watchlist") || [];
+  list.push({
+    id: Date.now().toString(),
+    address: (entry.address || "").trim().toLowerCase(),
+    name: (entry.name || "").trim(),
+    enabled: true,
+    created: new Date().toISOString(),
+    actions: {
+      aiAnalyze: true,       // AI reads and summarizes
+      smsAlert: entry.smsAlert !== false,   // send SMS notification
+      autoCalendar: entry.autoCalendar || false, // auto-create calendar events
+      autoReply: false,      // auto-draft a reply
+      flagImportant: true,   // star/flag the email
+    },
+  });
+  store.set("ai_watchlist", list);
+  return list;
+});
+
+ipcMain.handle("watchlist-remove", (_, id) => {
+  let list = store.get("ai_watchlist") || [];
+  list = list.filter((i) => i.id !== id);
+  store.set("ai_watchlist", list);
+  return list;
+});
+
+ipcMain.handle("watchlist-toggle", (_, id) => {
+  const list = store.get("ai_watchlist") || [];
+  const item = list.find((i) => i.id === id);
+  if (item) item.enabled = !item.enabled;
+  store.set("ai_watchlist", list);
+  return list;
+});
+
+ipcMain.handle("watchlist-update", (_, id, updates) => {
+  const list = store.get("ai_watchlist") || [];
+  const item = list.find((i) => i.id === id);
+  if (item) {
+    if (updates.address !== undefined) item.address = updates.address.trim().toLowerCase();
+    if (updates.name !== undefined) item.name = updates.name.trim();
+    if (updates.actions !== undefined) item.actions = { ...item.actions, ...updates.actions };
+  }
+  store.set("ai_watchlist", list);
+  return list;
+});
+
 // ── Blacklist & Greylist (same CRUD pattern as whitelist) ────────────────
 function _listCRUD(storeKey) {
   return {
@@ -1827,8 +1956,7 @@ If dates/times are relative (e.g. "next Tuesday", "tomorrow at 3pm"), convert to
 ipcMain.handle("gcal-create-event", async (_, event) => {
   try {
     const calId = store.get("google_calendar_id") || "primary";
-    const token = store.get("google_access_token");
-    if (!token) return { error: "Google Calendar not connected. Add your token in Settings." };
+    const token = await googleAuth.getToken();
 
     const startDateTime = `${event.date}T${event.startTime || "09:00"}:00`;
     const endDateTime = `${event.date}T${event.endTime || "10:00"}:00`;
@@ -1879,8 +2007,7 @@ ipcMain.handle("gcal-create-event", async (_, event) => {
 // Get events for a specific day
 ipcMain.handle("gcal-get-day", async (_, dateStr) => {
   try {
-    const token = store.get("google_access_token");
-    if (!token) return { error: "Google Calendar not connected" };
+    const token = await googleAuth.getToken();
     const calId = store.get("google_calendar_id") || "primary";
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -1937,8 +2064,7 @@ ipcMain.handle("gcal-check-conflicts", async (_, event) => {
     const dayResult = await new Promise((resolve) => {
       // Reuse the gcal-get-day handler logic
       const handler = async () => {
-        const token = store.get("google_access_token");
-        if (!token) return { error: "Not connected" };
+        const token = await googleAuth.getToken();
         const calId = store.get("google_calendar_id") || "primary";
         const params = new URLSearchParams({
           timeMin: new Date(`${event.date}T${event.startTime || "00:00"}:00`).toISOString(),
@@ -1974,12 +2100,33 @@ ipcMain.handle("gcal-check-conflicts", async (_, event) => {
   }
 });
 
-ipcMain.handle("gcal-get-token", () => {
-  return store.get("google_access_token") ? "••••••••" : "";
+// ── Google OAuth flow ────────────────────────────────────────────────────
+ipcMain.handle("gcal-status", () => {
+  return {
+    configured: googleAuth.isConfigured,
+    connected: googleAuth.isConnected,
+    clientId: store.get("google_client_id") ? "••••••••" : "",
+  };
 });
 
-ipcMain.handle("gcal-save-token", (_, token) => {
-  if (token && token !== "••••••••") store.set("google_access_token", token);
+ipcMain.handle("gcal-save-credentials", (_, clientId, clientSecret) => {
+  if (clientId && clientId !== "••••••••") store.set("google_client_id", clientId);
+  if (clientSecret && clientSecret !== "••••••••") store.set("google_client_secret", clientSecret);
+  googleAuth = new GoogleAuth(store); // reinitialize
+  return { ok: true };
+});
+
+ipcMain.handle("gcal-authorize", async () => {
+  try {
+    await googleAuth.authorize();
+    return { ok: true };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+ipcMain.handle("gcal-disconnect", () => {
+  googleAuth.disconnect();
   return { ok: true };
 });
 

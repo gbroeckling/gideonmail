@@ -60,6 +60,13 @@ contextBridge.exposeInMainWorld("gideon", {
   // Check Now (debug)
   checkNow: () => ipcRenderer.invoke("check-now"),
 
+  // AI Watch List
+  watchlistGet:    ()        => ipcRenderer.invoke("watchlist-get"),
+  watchlistAdd:    (e)       => ipcRenderer.invoke("watchlist-add", e),
+  watchlistRemove: (id)      => ipcRenderer.invoke("watchlist-remove", id),
+  watchlistToggle: (id)      => ipcRenderer.invoke("watchlist-toggle", id),
+  watchlistUpdate: (id, u)   => ipcRenderer.invoke("watchlist-update", id, u),
+
   // Blacklist & Greylist
   blacklistGet:    ()        => ipcRenderer.invoke("blacklist-get"),
   blacklistAdd:    (e)       => ipcRenderer.invoke("blacklist-add", e),
@@ -83,8 +90,10 @@ contextBridge.exposeInMainWorld("gideon", {
   gcalCreateEvent:   (event)  => ipcRenderer.invoke("gcal-create-event", event),
   gcalGetDay:        (date)   => ipcRenderer.invoke("gcal-get-day", date),
   gcalCheckConflicts:(event)  => ipcRenderer.invoke("gcal-check-conflicts", event),
-  gcalGetToken:      ()       => ipcRenderer.invoke("gcal-get-token"),
-  gcalSaveToken:     (token)  => ipcRenderer.invoke("gcal-save-token", token),
+  gcalStatus:        ()       => ipcRenderer.invoke("gcal-status"),
+  gcalSaveCredentials: (id, secret) => ipcRenderer.invoke("gcal-save-credentials", id, secret),
+  gcalAuthorize:     ()       => ipcRenderer.invoke("gcal-authorize"),
+  gcalDisconnect:    ()       => ipcRenderer.invoke("gcal-disconnect"),
 
   // Standing Instructions
   instructionsGet:    ()      => ipcRenderer.invoke("instructions-get"),

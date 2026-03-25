@@ -47,6 +47,7 @@
             <select id="btnAddToList" style="padding:5px 8px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;font-size:12px;cursor:pointer">
               <option value="">Add sender to...</option>
               <option value="whitelist" style="color:#3b82f6">VIP Whitelist</option>
+              <option value="watchlist" style="color:#f59e0b">AI Watch List</option>
               <option value="blacklist" style="color:#ef4444">Blacklist</option>
               <option value="greylist" style="color:#94a3b8">Greylist</option>
             </select>
@@ -104,8 +105,15 @@
       <label>Anthropic API Key<input type="password" id="cfgApiKey" placeholder="sk-ant-..." /></label>
       <div style="padding:4px 20px"><button id="cfgAiVerify" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Verify API Key</button> <span id="cfgAiResult" style="font-size:11px"></span></div>
       <hr>
-      <label>Google Calendar OAuth Token<input type="password" id="cfgGcalToken" placeholder="OAuth access token" /></label>
-      <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">Get from <span style="color:var(--accent)">OAuth Playground</span> (developers.google.com/oauthplayground) with Calendar scope</div>
+      <div style="padding:6px 20px;font-size:11px;color:#f59e0b;font-weight:600">Google Calendar</div>
+      <label>Client ID<input type="password" id="cfgGcalClientId" placeholder="From Google Cloud Console" /></label>
+      <label>Client Secret<input type="password" id="cfgGcalSecret" placeholder="From Google Cloud Console" /></label>
+      <div style="padding:4px 20px;display:flex;gap:6px;align-items:center">
+        <button id="cfgGcalConnect" style="padding:4px 12px;background:#1a3a0a;border:1px solid #22c55e;color:#86efac;border-radius:4px;cursor:pointer;font-size:11px">Connect Google Calendar</button>
+        <button id="cfgGcalDisconnect" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Disconnect</button>
+        <span id="cfgGcalStatus" style="font-size:11px"></span>
+      </div>
+      <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">Create credentials at <span style="color:var(--accent)">console.cloud.google.com</span> → APIs → Credentials → OAuth 2.0. Add <span style="color:var(--fg)">http://localhost:39847/oauth/callback</span> as a redirect URI.</div>
       <hr>
       <label>Phone Number (SMS)<input type="text" id="cfgSmsTo" placeholder="6049928450" /></label>
       <label>Textbelt API Key<input type="text" id="cfgTextbeltKey" placeholder="Leave blank for 1 free SMS/day" /></label>
@@ -130,6 +138,7 @@
       </div>
       <div style="display:flex;border-bottom:1px solid var(--border);flex-wrap:wrap">
         <button class="rules-tab active" data-tab="whitelist">VIP</button>
+        <button class="rules-tab" data-tab="watchlist">Watch</button>
         <button class="rules-tab" data-tab="blacklist">Blacklist</button>
         <button class="rules-tab" data-tab="greylist">Greylist</button>
         <button class="rules-tab" data-tab="instructions">AI Rules</button>
@@ -145,6 +154,16 @@
           <input type="text" id="wlAddAddr" placeholder="Email or name to match" style="flex:1;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
           <input type="text" id="wlAddName" placeholder="Label" style="width:100px;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
           <button id="wlAddBtn" class="send-btn" style="padding:6px 14px;font-size:12px">Add</button>
+        </div>
+      </div>
+      <!-- AI Watch List -->
+      <div id="rulesWatchlist" class="rules-section" style="display:none">
+        <div style="padding:12px 16px;font-size:12px;color:#f59e0b">Emails from these senders are automatically analyzed by AI. Configure actions per sender.</div>
+        <div id="watchlistEntries" style="padding:4px 16px;max-height:300px;overflow-y:auto"></div>
+        <div style="padding:8px 16px;display:flex;gap:6px">
+          <input type="text" id="wlWatchAddr" placeholder="Email or name to match" style="flex:1;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
+          <input type="text" id="wlWatchName" placeholder="Label" style="width:100px;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
+          <button id="wlWatchAddBtn" class="send-btn" style="padding:6px 14px;font-size:12px;background:#92400e;border-color:#f59e0b">Add</button>
         </div>
       </div>
       <!-- Blacklist -->

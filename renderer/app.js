@@ -157,6 +157,7 @@ function bindEvents() {
     if (!addr) { e.target.value = ""; return; }
 
     const addFn = list === "whitelist" ? gideon.whitelistAdd
+      : list === "watchlist" ? gideon.watchlistAdd
       : list === "blacklist" ? gideon.blacklistAdd
       : list === "greylist" ? gideon.greylistAdd : null;
     if (!addFn) { e.target.value = ""; return; }
@@ -220,12 +221,22 @@ function bindEvents() {
     tab.addEventListener("click", () => {
       $$(".rules-tab").forEach((t) => t.classList.remove("active"));
       tab.classList.add("active");
-      const sections = { whitelist: "rulesWhitelist", blacklist: "rulesBlacklist", greylist: "rulesGreylist", instructions: "rulesInstructions", security: "rulesSecurity", conversations: "rulesConversations", sms: "rulesSms" };
+      const sections = { whitelist: "rulesWhitelist", watchlist: "rulesWatchlist", blacklist: "rulesBlacklist", greylist: "rulesGreylist", instructions: "rulesInstructions", security: "rulesSecurity", conversations: "rulesConversations", sms: "rulesSms" };
       Object.values(sections).forEach((id) => { const el = $(`#${id}`); if (el) el.style.display = "none"; });
       const target = sections[tab.dataset.tab];
       if (target) $(`#${target}`).style.display = "block";
     });
   }
+
+  // Watch list add
+  $("#wlWatchAddBtn").addEventListener("click", async () => {
+    const addr = $("#wlWatchAddr").value.trim();
+    if (!addr) return;
+    await gideon.watchlistAdd({ address: addr, name: $("#wlWatchName").value.trim() });
+    $("#wlWatchAddr").value = ""; $("#wlWatchName").value = "";
+    renderWatchlist();
+  });
+  $("#wlWatchAddr").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#wlWatchAddBtn").click(); });
 
   // Blacklist add
   $("#blAddBtn").addEventListener("click", async () => {
@@ -294,6 +305,25 @@ function bindEvents() {
     const r = await gideon.convoTest();
     $("#cfgConvoResult").textContent = r.message;
     $("#cfgConvoResult").style.color = r.ok ? "var(--success)" : "var(--danger)";
+  });
+  // Google Calendar OAuth
+  $("#cfgGcalConnect").addEventListener("click", async () => {
+    await saveSettingsQuiet(); // save client ID/secret first
+    $("#cfgGcalStatus").textContent = "Opening browser...";
+    $("#cfgGcalStatus").style.color = "#f59e0b";
+    const r = await gideon.gcalAuthorize();
+    if (r.ok) {
+      $("#cfgGcalStatus").textContent = "Connected!";
+      $("#cfgGcalStatus").style.color = "#22c55e";
+    } else {
+      $("#cfgGcalStatus").textContent = "Failed: " + r.error;
+      $("#cfgGcalStatus").style.color = "#ef4444";
+    }
+  });
+  $("#cfgGcalDisconnect").addEventListener("click", async () => {
+    await gideon.gcalDisconnect();
+    $("#cfgGcalStatus").textContent = "Disconnected";
+    $("#cfgGcalStatus").style.color = "#94a3b8";
   });
   $("#cfgAutoLaunch").addEventListener("change", async (e) => {
     await gideon.autolaunchSet(e.target.checked);
@@ -709,8 +739,11 @@ async function openSettings() {
   $("#cfgSmtpSecure").checked = cfg.smtpSecure || false;
   const aiKey = await gideon.aiGetKey();
   $("#cfgApiKey").value = aiKey || "";
-  const gcalToken = await gideon.gcalGetToken();
-  $("#cfgGcalToken").value = gcalToken || "";
+  const gcalStatus = await gideon.gcalStatus();
+  $("#cfgGcalClientId").value = gcalStatus.clientId || "";
+  $("#cfgGcalSecret").value = gcalStatus.clientId ? "••••••••" : "";
+  $("#cfgGcalStatus").textContent = gcalStatus.connected ? "Connected" : gcalStatus.configured ? "Not connected" : "Not configured";
+  $("#cfgGcalStatus").style.color = gcalStatus.connected ? "#22c55e" : "#94a3b8";
   const smsCfg = await gideon.smsGetConfig();
   $("#cfgSmsTo").value = smsCfg.smsTo || "";
   $("#cfgTextbeltKey").value = smsCfg.textbeltKey || "";
@@ -760,8 +793,9 @@ async function saveSettingsQuiet() {
   await gideon.saveAccount(cfg);
   const apiKey = $("#cfgApiKey").value.trim();
   if (apiKey) await gideon.aiSaveKey(apiKey);
-  const gcalToken = $("#cfgGcalToken").value.trim();
-  if (gcalToken) await gideon.gcalSaveToken(gcalToken);
+  const gcalId = $("#cfgGcalClientId").value.trim();
+  const gcalSecret = $("#cfgGcalSecret").value.trim();
+  if (gcalId || gcalSecret) await gideon.gcalSaveCredentials(gcalId, gcalSecret);
   await gideon.smsSaveConfig({
     smsTo: $("#cfgSmsTo").value.trim(),
     textbeltKey: $("#cfgTextbeltKey").value.trim(),
@@ -773,6 +807,101 @@ async function saveSettings() {
   $("#settingsModal").style.display = "none";
   loadFolders();
   loadMessages();
+}
+
+// ── Watch List renderer (with per-sender action toggles) ────────────────
+async function renderWatchlist() {
+  const list = await gideon.watchlistGet();
+  const container = $("#watchlistEntries");
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (!list.length) {
+    container.innerHTML = '<div style="font-size:10px;color:var(--fg2);padding:4px 0">No watched senders. Add one below.</div>';
+    return;
+  }
+
+  const header = document.createElement("div");
+  header.style.cssText = "font-size:10px;color:#f59e0b;padding:2px 0 4px;font-weight:600";
+  header.textContent = `${list.length} watched sender${list.length > 1 ? "s" : ""}`;
+  container.appendChild(header);
+
+  for (const item of list) {
+    const card = document.createElement("div");
+    card.style.cssText = "padding:8px;background:var(--bg2);border-radius:6px;margin-bottom:4px;border-left:3px solid #f59e0b";
+
+    // Header row: toggle + name + edit + delete
+    const hdr = document.createElement("div");
+    hdr.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:4px";
+
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = item.enabled;
+    toggle.addEventListener("change", async () => { await gideon.watchlistToggle(item.id); renderWatchlist(); });
+
+    const info = document.createElement("div");
+    info.style.cssText = `flex:1;${item.enabled ? "" : "text-decoration:line-through;color:var(--fg2)"}`;
+    info.innerHTML = `<div style="font-weight:600;font-size:12px">${item.name || item.address}</div>` +
+      (item.name ? `<div style="font-size:10px;color:var(--fg2)">${item.address}</div>` : "");
+
+    const editBtn = document.createElement("button");
+    editBtn.style.cssText = "background:none;border:1px solid var(--bg3);color:var(--fg2);cursor:pointer;font-size:10px;padding:1px 6px;border-radius:3px";
+    editBtn.textContent = "Edit";
+    editBtn.addEventListener("click", () => {
+      const newAddr = prompt("Email or name:", item.address);
+      if (newAddr === null) return;
+      const newName = prompt("Label:", item.name || "");
+      gideon.watchlistUpdate(item.id, { address: newAddr, name: newName || "" }).then(renderWatchlist);
+    });
+
+    const del = document.createElement("button");
+    del.style.cssText = "background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;padding:0 4px";
+    del.textContent = "\u00d7";
+    del.addEventListener("click", async () => {
+      if (!confirm(`Remove "${item.name || item.address}" from watch list?`)) return;
+      await gideon.watchlistRemove(item.id);
+      renderWatchlist();
+    });
+
+    hdr.appendChild(toggle);
+    hdr.appendChild(info);
+    hdr.appendChild(editBtn);
+    hdr.appendChild(del);
+    card.appendChild(hdr);
+
+    // Action toggles
+    const actions = item.actions || {};
+    const actionsDiv = document.createElement("div");
+    actionsDiv.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;padding-left:22px";
+
+    const actionDefs = [
+      { key: "aiAnalyze", label: "AI Analyze", color: "#a78bfa" },
+      { key: "smsAlert", label: "SMS Alert", color: "#22c55e" },
+      { key: "autoCalendar", label: "Auto Calendar", color: "#f59e0b" },
+      { key: "flagImportant", label: "Flag Important", color: "#3b82f6" },
+      { key: "autoReply", label: "Auto Reply", color: "#94a3b8" },
+    ];
+
+    for (const ad of actionDefs) {
+      const chip = document.createElement("label");
+      chip.style.cssText = `display:inline-flex;align-items:center;gap:3px;padding:2px 6px;border-radius:3px;font-size:10px;cursor:pointer;border:1px solid ${actions[ad.key] ? ad.color + "66" : "var(--bg3)"};color:${actions[ad.key] ? ad.color : "var(--fg2)"};background:${actions[ad.key] ? ad.color + "15" : "transparent"}`;
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!actions[ad.key];
+      cb.style.cssText = "width:10px;height:10px;margin:0";
+      cb.addEventListener("change", async () => {
+        const updatedActions = { ...actions, [ad.key]: cb.checked };
+        await gideon.watchlistUpdate(item.id, { actions: updatedActions });
+        renderWatchlist();
+      });
+      chip.appendChild(cb);
+      chip.appendChild(document.createTextNode(ad.label));
+      actionsDiv.appendChild(chip);
+    }
+
+    card.appendChild(actionsDiv);
+    container.appendChild(card);
+  }
 }
 
 // ── Generic list renderer (whitelist, blacklist, greylist) ──────────────
@@ -875,6 +1004,7 @@ async function openRules() {
 
   $("#rulesModal").style.display = "flex";
   renderManagedList("#whitelistEntries", gideon.whitelistGet, gideon.whitelistToggle, gideon.whitelistRemove, gideon.whitelistUpdate, "var(--accent)");
+  renderWatchlist();
   renderManagedList("#blacklistEntries", gideon.blacklistGet, gideon.blacklistToggle, gideon.blacklistRemove, gideon.blacklistUpdate, "#ef4444");
   renderManagedList("#greylistEntries", gideon.greylistGet, gideon.greylistToggle, gideon.greylistRemove, gideon.greylistUpdate, "#94a3b8");
   renderSettingsInstructions();
