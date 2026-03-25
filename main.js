@@ -1336,8 +1336,33 @@ ipcMain.handle("sms-save-config", (_, cfg) => {
 });
 
 ipcMain.handle("sms-test", async (_, msg) => {
+  // Test bypasses quiet hours and rate limits — direct send
+  const phone = store.get("sms_to");
+  if (!phone) return { error: "No phone number configured" };
+  const key = store.get("textbelt_key") || "textbelt";
+  const digits = phone.replace(/\D/g, "");
+  const fullNumber = digits.startsWith("1") ? digits : "1" + digits;
+  const text = msg || "GideonMail test: SMS is working!";
   try {
-    await sendSMS(msg || "GideonMail test: SMS notifications are working.");
+    const https = require("https");
+    const postData = JSON.stringify({ phone: fullNumber, message: text.substring(0, 160), key });
+    await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: "textbelt.com", path: "/text", method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(postData) },
+      }, (res) => {
+        let body = "";
+        res.on("data", (d) => { body += d; });
+        res.on("end", () => {
+          const r = JSON.parse(body);
+          if (r.success) resolve(r);
+          else reject(new Error(r.error || "SMS failed"));
+        });
+      });
+      req.on("error", reject);
+      req.write(postData);
+      req.end();
+    });
     return { ok: true };
   } catch (e) { return { error: e.message }; }
 });
