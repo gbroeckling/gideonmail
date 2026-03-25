@@ -23,6 +23,9 @@ async function init() {
     return;
   }
 
+  // Delay slightly to let main process IMAP connect first
+  await new Promise((r) => setTimeout(r, 1500));
+
   try {
     await loadFolders();
   } catch (e) {
