@@ -43,6 +43,12 @@
             <button id="btnDelete" class="danger">Delete</button>
             <button id="btnStar" title="Star">&#9734;</button>
             <button id="btnScan" title="Security scan" style="color:#22c55e">&#128737; Scan</button>
+            <select id="btnAddToList" style="padding:5px 8px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;font-size:12px;cursor:pointer">
+              <option value="">Add sender to...</option>
+              <option value="whitelist" style="color:#3b82f6">VIP Whitelist</option>
+              <option value="blacklist" style="color:#ef4444">Blacklist</option>
+              <option value="greylist" style="color:#94a3b8">Greylist</option>
+            </select>
           </div>
           <div id="scanResult" style="display:none;padding:4px 20px;font-size:11px;white-space:pre-wrap"></div>
           <div id="readAttachments" class="attachments"></div>

@@ -51,6 +51,30 @@ function bindEvents() {
   $("#btnForward").addEventListener("click", () => openCompose("forward"));
   $("#btnDelete").addEventListener("click", deleteCurrent);
   $("#btnStar").addEventListener("click", starCurrent);
+  $("#btnAddToList").addEventListener("change", async (e) => {
+    const list = e.target.value;
+    if (!list || !currentMsg) { e.target.value = ""; return; }
+    const addr = currentMsg.from?.address || "";
+    const name = currentMsg.from?.name || "";
+    if (!addr) { e.target.value = ""; return; }
+
+    const addFn = list === "whitelist" ? gideon.whitelistAdd
+      : list === "blacklist" ? gideon.blacklistAdd
+      : list === "greylist" ? gideon.greylistAdd : null;
+    if (!addFn) { e.target.value = ""; return; }
+
+    await addFn({ address: addr, name: name });
+    const label = list === "whitelist" ? "VIP Whitelist" : list === "blacklist" ? "Blacklist" : "Greylist";
+    e.target.value = "";
+
+    // Refresh message list to show new coloring
+    await renderMessageList();
+
+    // Brief confirmation
+    const prev = e.target.style.borderColor;
+    e.target.style.borderColor = "#22c55e";
+    setTimeout(() => { e.target.style.borderColor = prev; }, 1500);
+  });
   $("#btnScan").addEventListener("click", async () => {
     if (!currentUid) return;
     $("#scanResult").style.display = "block";
