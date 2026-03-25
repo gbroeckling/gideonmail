@@ -156,14 +156,7 @@ function bindEvents() {
     const name = currentMsg.from?.name || "";
     if (!addr) { e.target.value = ""; return; }
 
-    const addFn = list === "whitelist" ? gideon.whitelistAdd
-      : list === "watchlist" ? gideon.watchlistAdd
-      : list === "blacklist" ? gideon.blacklistAdd
-      : list === "greylist" ? gideon.greylistAdd : null;
-    if (!addFn) { e.target.value = ""; return; }
-
-    await addFn({ address: addr, name: name });
-    const label = list === "whitelist" ? "VIP Whitelist" : list === "blacklist" ? "Blacklist" : "Greylist";
+    await gideon.peopleAdd({ address: addr, name: name, role: list });
     e.target.value = "";
 
     // Refresh message list to show new coloring
@@ -221,15 +214,25 @@ function bindEvents() {
     tab.addEventListener("click", () => {
       $$(".rules-tab").forEach((t) => t.classList.remove("active"));
       tab.classList.add("active");
-      const sections = { whitelist: "rulesWhitelist", watchlist: "rulesWatchlist", blacklist: "rulesBlacklist", greylist: "rulesGreylist", instructions: "rulesInstructions", security: "rulesSecurity", conversations: "rulesConversations", sms: "rulesSms" };
+      const sections = { people: "rulesPeople", instructions: "rulesInstructions", security: "rulesSecurity", conversations: "rulesConversations", sms: "rulesSms" };
       Object.values(sections).forEach((id) => { const el = $(`#${id}`); if (el) el.style.display = "none"; });
       const target = sections[tab.dataset.tab];
       if (target) $(`#${target}`).style.display = "block";
     });
   }
 
-  // Watch list add
-  $("#wlWatchAddBtn").addEventListener("click", async () => {
+  // People add
+  $("#peopleAddBtn").addEventListener("click", async () => {
+    const addr = $("#peopleAddAddr").value.trim();
+    if (!addr) return;
+    await gideon.peopleAdd({ address: addr, name: $("#peopleAddName").value.trim(), role: $("#peopleAddRole").value });
+    $("#peopleAddAddr").value = ""; $("#peopleAddName").value = "";
+    renderPeople();
+  });
+  $("#peopleAddAddr").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#peopleAddBtn").click(); });
+
+  // Watch list add (legacy)
+  if ($("#wlWatchAddBtn")) $("#wlWatchAddBtn").addEventListener("click", async () => {
     const addr = $("#wlWatchAddr").value.trim();
     if (!addr) return;
     await gideon.watchlistAdd({ address: addr, name: $("#wlWatchName").value.trim() });
@@ -809,6 +812,107 @@ async function saveSettings() {
   loadMessages();
 }
 
+// ── Unified People renderer ─────────────────────────────────────────────
+const ROLE_COLORS = { vip: "#3b82f6", watch: "#f59e0b", blocked: "#ef4444", muted: "#64748b" };
+const ROLE_LABELS = { vip: "VIP", watch: "Watch", blocked: "Blocked", muted: "Muted" };
+const ROLE_DESC = { vip: "Always texts you", watch: "AI analyzes + actions", blocked: "Dark red, auto-deletes in 7 days", muted: "Grey, no notifications" };
+
+async function renderPeople() {
+  const people = await gideon.peopleGetAll();
+  const container = $("#peopleEntries");
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (!people.length) {
+    container.innerHTML = '<div style="font-size:11px;color:var(--fg2);padding:8px 0">No senders configured. Add someone below, or use the "Add sender to..." dropdown when reading an email.</div>';
+    return;
+  }
+
+  // Group by role for visual clarity
+  const groups = { vip: [], watch: [], blocked: [], muted: [] };
+  for (const p of people) groups[p.role]?.push(p);
+
+  for (const role of ["vip", "watch", "blocked", "muted"]) {
+    const items = groups[role];
+    if (!items.length) continue;
+
+    const groupHeader = document.createElement("div");
+    groupHeader.style.cssText = `font-size:10px;font-weight:700;color:${ROLE_COLORS[role]};padding:6px 0 2px;border-bottom:1px solid ${ROLE_COLORS[role]}33;margin-top:4px`;
+    groupHeader.textContent = `${ROLE_LABELS[role]} (${items.length}) — ${ROLE_DESC[role]}`;
+    container.appendChild(groupHeader);
+
+    for (const item of items) {
+      const card = document.createElement("div");
+      card.style.cssText = `display:flex;align-items:center;gap:6px;padding:5px 4px;font-size:11px;border-bottom:1px solid var(--border);border-left:3px solid ${ROLE_COLORS[role]}`;
+
+      // Enable toggle
+      const toggle = document.createElement("input");
+      toggle.type = "checkbox";
+      toggle.checked = item.enabled;
+      toggle.addEventListener("change", async () => { await gideon.peopleToggle(item.id, role); renderPeople(); });
+
+      // Info
+      const info = document.createElement("div");
+      info.style.cssText = `flex:1;min-width:0;${item.enabled ? "" : "text-decoration:line-through;opacity:0.5"}`;
+      info.innerHTML = `<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.name || item.address}</div>` +
+        (item.name ? `<div style="font-size:10px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis">${item.address}</div>` : "");
+
+      // Role dropdown (change role inline)
+      const roleSel = document.createElement("select");
+      roleSel.style.cssText = "padding:2px 4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:3px;color:var(--fg);font-size:10px;cursor:pointer";
+      for (const r of ["vip", "watch", "blocked", "muted"]) {
+        const opt = document.createElement("option");
+        opt.value = r; opt.textContent = ROLE_LABELS[r];
+        if (r === role) opt.selected = true;
+        roleSel.appendChild(opt);
+      }
+      roleSel.addEventListener("change", async () => {
+        await gideon.peopleChangeRole(item.id, role, roleSel.value);
+        renderPeople();
+      });
+
+      // Delete
+      const del = document.createElement("button");
+      del.style.cssText = "background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;padding:0 4px";
+      del.textContent = "\u00d7";
+      del.addEventListener("click", async () => {
+        if (!confirm(`Remove "${item.name || item.address}"?`)) return;
+        await gideon.peopleRemove(item.id, role);
+        renderPeople();
+      });
+
+      card.appendChild(toggle);
+      card.appendChild(info);
+      card.appendChild(roleSel);
+
+      // Watch-specific: show action toggles
+      if (role === "watch" && item.actions) {
+        const actionsDiv = document.createElement("div");
+        actionsDiv.style.cssText = "display:flex;gap:2px";
+        const actionDefs = [
+          { key: "smsAlert", label: "SMS", color: "#22c55e" },
+          { key: "autoCalendar", label: "Cal", color: "#f59e0b" },
+          { key: "flagImportant", label: "Flag", color: "#3b82f6" },
+        ];
+        for (const ad of actionDefs) {
+          const chip = document.createElement("span");
+          chip.style.cssText = `padding:1px 4px;border-radius:2px;font-size:9px;cursor:pointer;border:1px solid ${item.actions[ad.key] ? ad.color + "66" : "var(--bg3)"};color:${item.actions[ad.key] ? ad.color : "var(--fg2)"}`;
+          chip.textContent = ad.label;
+          chip.addEventListener("click", async () => {
+            await gideon.peopleUpdateActions(item.id, { [ad.key]: !item.actions[ad.key] });
+            renderPeople();
+          });
+          actionsDiv.appendChild(chip);
+        }
+        card.appendChild(actionsDiv);
+      }
+
+      card.appendChild(del);
+      container.appendChild(card);
+    }
+  }
+}
+
 // ── Watch List renderer (with per-sender action toggles) ────────────────
 async function renderWatchlist() {
   const list = await gideon.watchlistGet();
@@ -1003,10 +1107,7 @@ async function openRules() {
   $("#sfAutoCheckInterval").value = String(ac.intervalMin || 120);
 
   $("#rulesModal").style.display = "flex";
-  renderManagedList("#whitelistEntries", gideon.whitelistGet, gideon.whitelistToggle, gideon.whitelistRemove, gideon.whitelistUpdate, "var(--accent)");
-  renderWatchlist();
-  renderManagedList("#blacklistEntries", gideon.blacklistGet, gideon.blacklistToggle, gideon.blacklistRemove, gideon.blacklistUpdate, "#ef4444");
-  renderManagedList("#greylistEntries", gideon.greylistGet, gideon.greylistToggle, gideon.greylistRemove, gideon.greylistUpdate, "#94a3b8");
+  renderPeople();
   renderSettingsInstructions();
 }
 

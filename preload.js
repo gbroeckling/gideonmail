@@ -60,6 +60,14 @@ contextBridge.exposeInMainWorld("gideon", {
   // Check Now (debug)
   checkNow: () => ipcRenderer.invoke("check-now"),
 
+  // Unified People
+  peopleGetAll:      ()           => ipcRenderer.invoke("people-get-all"),
+  peopleAdd:         (entry)      => ipcRenderer.invoke("people-add", entry),
+  peopleChangeRole:  (id, old, n) => ipcRenderer.invoke("people-change-role", id, old, n),
+  peopleRemove:      (id, role)   => ipcRenderer.invoke("people-remove", id, role),
+  peopleToggle:      (id, role)   => ipcRenderer.invoke("people-toggle", id, role),
+  peopleUpdateActions:(id, acts)  => ipcRenderer.invoke("people-update-actions", id, acts),
+
   // AI Watch List
   watchlistGet:    ()        => ipcRenderer.invoke("watchlist-get"),
   watchlistAdd:    (e)       => ipcRenderer.invoke("watchlist-add", e),

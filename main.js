@@ -81,10 +81,25 @@ function createWindow() {
   });
 
   mainWindow.on("close", (e) => {
-    if (!app.isQuitting) {
-      e.preventDefault();
-      mainWindow.hide();
-    }
+    if (app.isQuitting) return;
+    e.preventDefault();
+
+    const { dialog } = require("electron");
+    dialog.showMessageBox(mainWindow, {
+      type: "question",
+      buttons: ["Minimize to Tray", "Quit"],
+      defaultId: 0,
+      title: "GideonMail",
+      message: "Keep running in the background?",
+      detail: "GideonMail will continue checking email and sending alerts from the system tray.",
+    }).then(({ response }) => {
+      if (response === 0) {
+        mainWindow.hide();
+      } else {
+        app.isQuitting = true;
+        app.quit();
+      }
+    });
   });
 }
 
@@ -1718,6 +1733,108 @@ ipcMain.handle("watchlist-update", (_, id, updates) => {
   }
   store.set("ai_watchlist", list);
   return list;
+});
+
+// ── Unified People list (merges VIP, Watch, Blacklist, Greylist) ─────────
+ipcMain.handle("people-get-all", () => {
+  const people = [];
+  for (const item of store.get("sms_whitelist") || []) {
+    people.push({ ...item, role: "vip", actions: { smsAlert: true } });
+  }
+  for (const item of store.get("ai_watchlist") || []) {
+    people.push({ ...item, role: "watch" });
+  }
+  for (const item of (store.get("sms_blacklist") || [])) {
+    people.push({ ...item, role: "blocked" });
+  }
+  for (const item of (store.get("sms_greylist") || [])) {
+    people.push({ ...item, role: "muted" });
+  }
+  people.sort((a, b) => (a.name || a.address).localeCompare(b.name || b.address));
+  return people;
+});
+
+ipcMain.handle("people-add", (_, entry) => {
+  const role = entry.role || "vip";
+  const base = {
+    id: Date.now().toString(),
+    address: (entry.address || "").trim().toLowerCase(),
+    name: (entry.name || "").trim(),
+    enabled: true,
+    created: new Date().toISOString(),
+  };
+
+  if (role === "vip") {
+    const list = store.get("sms_whitelist") || [];
+    list.push(base);
+    store.set("sms_whitelist", list);
+  } else if (role === "watch") {
+    const list = store.get("ai_watchlist") || [];
+    list.push({ ...base, actions: { aiAnalyze: true, smsAlert: true, autoCalendar: false, flagImportant: true, autoReply: false } });
+    store.set("ai_watchlist", list);
+  } else if (role === "blocked") {
+    const list = store.get("sms_blacklist") || [];
+    list.push(base);
+    store.set("sms_blacklist", list);
+  } else if (role === "muted") {
+    const list = store.get("sms_greylist") || [];
+    list.push(base);
+    store.set("sms_greylist", list);
+  }
+  return { ok: true };
+});
+
+ipcMain.handle("people-change-role", (_, id, oldRole, newRole) => {
+  // Remove from old list
+  const storeKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist" };
+  const oldKey = storeKeys[oldRole];
+  const newKey = storeKeys[newRole];
+  if (!oldKey || !newKey) return { error: "Invalid role" };
+
+  let oldList = store.get(oldKey) || [];
+  const item = oldList.find((i) => i.id === id);
+  if (!item) return { error: "Not found" };
+
+  // Remove from old
+  oldList = oldList.filter((i) => i.id !== id);
+  store.set(oldKey, oldList);
+
+  // Add to new
+  const newList = store.get(newKey) || [];
+  if (newRole === "watch" && !item.actions) {
+    item.actions = { aiAnalyze: true, smsAlert: true, autoCalendar: false, flagImportant: true, autoReply: false };
+  }
+  newList.push(item);
+  store.set(newKey, newList);
+  return { ok: true };
+});
+
+ipcMain.handle("people-remove", (_, id, role) => {
+  const storeKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist" };
+  const key = storeKeys[role];
+  if (!key) return { error: "Invalid role" };
+  let list = store.get(key) || [];
+  list = list.filter((i) => i.id !== id);
+  store.set(key, list);
+  return { ok: true };
+});
+
+ipcMain.handle("people-toggle", (_, id, role) => {
+  const storeKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist" };
+  const key = storeKeys[role];
+  if (!key) return { error: "Invalid role" };
+  const list = store.get(key) || [];
+  const item = list.find((i) => i.id === id);
+  if (item) item.enabled = !item.enabled;
+  store.set(key, list);
+  return { ok: true };
+});
+
+ipcMain.handle("people-update-actions", (_, id, actions) => {
+  const list = store.get("ai_watchlist") || [];
+  const item = list.find((i) => i.id === id);
+  if (item) { item.actions = { ...item.actions, ...actions }; store.set("ai_watchlist", list); }
+  return { ok: true };
 });
 
 // ── Blacklist & Greylist (same CRUD pattern as whitelist) ────────────────
