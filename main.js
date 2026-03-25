@@ -1788,6 +1788,201 @@ ipcMain.handle("ai-chat", async (_, message, emailContext) => {
   catch (e) { return { error: e.message }; }
 });
 
+// ── AI: Extract event from email ─────────────────────────────────────────
+ipcMain.handle("ai-extract-event", async (_, email) => {
+  try {
+    const client = getAnthropicClient();
+    const content = email.text || email.html?.replace(/<[^>]+>/g, " ").substring(0, 3000) || "";
+    const today = new Date().toISOString().split("T")[0];
+
+    const response = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 512,
+      system: `Extract calendar event details from this email. Today is ${today}. Return ONLY valid JSON with these fields:
+{
+  "title": "event title",
+  "date": "YYYY-MM-DD",
+  "startTime": "HH:MM" (24h format),
+  "endTime": "HH:MM" (24h format, estimate 1h if not specified),
+  "location": "address or venue or empty string",
+  "description": "brief summary of what this is about",
+  "attendees": ["email@example.com"] (extract any email addresses mentioned)
+}
+If dates/times are relative (e.g. "next Tuesday", "tomorrow at 3pm"), convert to absolute. If no time specified, default to 09:00-10:00. If no date found, use tomorrow.`,
+      messages: [{ role: "user", content: `From: ${email.from?.name || ""} <${email.from?.address || ""}>\nSubject: ${email.subject}\nDate: ${email.date}\n\n${content}` }],
+    });
+
+    const text = response.content[0]?.text || "";
+    // Extract JSON from response
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return { error: "Could not extract event details" };
+    const event = JSON.parse(jsonMatch[0]);
+    return { ok: true, event };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+// ── Google Calendar ─────────────────────────────────────────────────────
+ipcMain.handle("gcal-create-event", async (_, event) => {
+  try {
+    const calId = store.get("google_calendar_id") || "primary";
+    const token = store.get("google_access_token");
+    if (!token) return { error: "Google Calendar not connected. Add your token in Settings." };
+
+    const startDateTime = `${event.date}T${event.startTime || "09:00"}:00`;
+    const endDateTime = `${event.date}T${event.endTime || "10:00"}:00`;
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    const body = JSON.stringify({
+      summary: event.title,
+      description: event.description || "",
+      location: event.location || "",
+      start: { dateTime: startDateTime, timeZone: timezone },
+      end: { dateTime: endDateTime, timeZone: timezone },
+      attendees: (event.attendees || []).filter(Boolean).map((e) => ({ email: e })),
+    });
+
+    const https = require("https");
+    const res = await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: "www.googleapis.com",
+        path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?sendUpdates=all`,
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
+      }, (res) => {
+        let data = "";
+        res.on("data", (d) => { data += d; });
+        res.on("end", () => {
+          try { resolve({ status: res.statusCode, data: JSON.parse(data) }); }
+          catch (e) { resolve({ status: res.statusCode, data }); }
+        });
+      });
+      req.on("error", reject);
+      req.write(body);
+      req.end();
+    });
+
+    if (res.status === 200 || res.status === 201) {
+      return { ok: true, link: res.data.htmlLink || "", id: res.data.id };
+    }
+    return { error: `Google Calendar API error ${res.status}: ${JSON.stringify(res.data.error?.message || res.data)}` };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+// Get events for a specific day
+ipcMain.handle("gcal-get-day", async (_, dateStr) => {
+  try {
+    const token = store.get("google_access_token");
+    if (!token) return { error: "Google Calendar not connected" };
+    const calId = store.get("google_calendar_id") || "primary";
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    const dayStart = `${dateStr}T00:00:00`;
+    const dayEnd = `${dateStr}T23:59:59`;
+
+    const params = new URLSearchParams({
+      timeMin: new Date(dayStart).toISOString(),
+      timeMax: new Date(dayEnd + "Z").toISOString(),
+      singleEvents: "true",
+      orderBy: "startTime",
+      timeZone: timezone,
+    });
+
+    const https = require("https");
+    const res = await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: "www.googleapis.com",
+        path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?${params}`,
+        headers: { "Authorization": `Bearer ${token}` },
+      }, (res) => {
+        let data = "";
+        res.on("data", (d) => { data += d; });
+        res.on("end", () => {
+          try { resolve({ status: res.statusCode, data: JSON.parse(data) }); }
+          catch (e) { resolve({ status: res.statusCode, data }); }
+        });
+      });
+      req.on("error", reject);
+      req.end();
+    });
+
+    if (res.status !== 200) return { error: `API error ${res.status}` };
+
+    const events = (res.data.items || []).map((e) => ({
+      id: e.id,
+      title: e.summary || "(no title)",
+      start: e.start?.dateTime || e.start?.date || "",
+      end: e.end?.dateTime || e.end?.date || "",
+      location: e.location || "",
+      description: (e.description || "").substring(0, 200),
+      attendees: (e.attendees || []).map((a) => a.email),
+    }));
+
+    return { ok: true, events, date: dateStr };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+// Check for conflicts with a proposed event
+ipcMain.handle("gcal-check-conflicts", async (_, event) => {
+  try {
+    const dayResult = await new Promise((resolve) => {
+      // Reuse the gcal-get-day handler logic
+      const handler = async () => {
+        const token = store.get("google_access_token");
+        if (!token) return { error: "Not connected" };
+        const calId = store.get("google_calendar_id") || "primary";
+        const params = new URLSearchParams({
+          timeMin: new Date(`${event.date}T${event.startTime || "00:00"}:00`).toISOString(),
+          timeMax: new Date(`${event.date}T${event.endTime || "23:59"}:00`).toISOString(),
+          singleEvents: "true",
+        });
+        const https = require("https");
+        return new Promise((res, rej) => {
+          const req = https.request({
+            hostname: "www.googleapis.com",
+            path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?${params}`,
+            headers: { "Authorization": `Bearer ${token}` },
+          }, (r) => {
+            let d = ""; r.on("data", (c) => { d += c; });
+            r.on("end", () => { try { res({ status: r.statusCode, data: JSON.parse(d) }); } catch(e) { res({ status: r.statusCode, data: d }); } });
+          });
+          req.on("error", rej);
+          req.end();
+        });
+      };
+      handler().then(resolve).catch(() => resolve({ error: "failed" }));
+    });
+
+    if (dayResult.error) return { conflicts: [], error: dayResult.error };
+    const existing = (dayResult.data?.items || []).map((e) => ({
+      title: e.summary || "(no title)",
+      start: e.start?.dateTime || e.start?.date || "",
+      end: e.end?.dateTime || e.end?.date || "",
+    }));
+    return { ok: true, conflicts: existing };
+  } catch (e) {
+    return { conflicts: [], error: e.message };
+  }
+});
+
+ipcMain.handle("gcal-get-token", () => {
+  return store.get("google_access_token") ? "••••••••" : "";
+});
+
+ipcMain.handle("gcal-save-token", (_, token) => {
+  if (token && token !== "••••••••") store.set("google_access_token", token);
+  return { ok: true };
+});
+
 ipcMain.handle("ai-clear-history", () => {
   conversationHistory = [];
   return { ok: true };

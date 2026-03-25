@@ -51,6 +51,104 @@ function bindEvents() {
   $("#btnForward").addEventListener("click", () => openCompose("forward"));
   $("#btnDelete").addEventListener("click", deleteCurrent);
   $("#btnStar").addEventListener("click", starCurrent);
+  // ── Create Task (Calendar) ──────────────────────────────────────────────
+  $("#btnTask").addEventListener("click", async () => {
+    if (!currentMsg) return;
+
+    // Open AI panel and show progress there
+    if (!aiOpen) toggleAI();
+    addAIMessage("Creating calendar event from this email...", "system");
+
+    // Step 1: AI extracts event details
+    const extracted = await gideon.aiExtractEvent(currentMsg);
+    if (extracted.error) {
+      addAIMessage("Error extracting event: " + extracted.error, "error");
+      return;
+    }
+    const event = extracted.event;
+
+    // Step 2: Show extracted details and check for conflicts
+    let eventSummary = `Event extracted:\n` +
+      `  Title: ${event.title}\n` +
+      `  Date: ${event.date}\n` +
+      `  Time: ${event.startTime} – ${event.endTime}\n` +
+      `  Location: ${event.location || "(none)"}\n` +
+      `  Attendees: ${event.attendees?.length ? event.attendees.join(", ") : "(none)"}\n` +
+      `  Description: ${event.description || "(none)"}`;
+
+    // Check conflicts
+    const conflicts = await gideon.gcalCheckConflicts(event);
+    if (conflicts.ok && conflicts.conflicts.length > 0) {
+      eventSummary += `\n\nCONFLICTS:\n`;
+      for (const c of conflicts.conflicts) {
+        const cStart = c.start ? new Date(c.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "?";
+        const cEnd = c.end ? new Date(c.end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "?";
+        eventSummary += `  ${cStart}–${cEnd}: ${c.title}\n`;
+      }
+    }
+
+    // Show day's events
+    const dayEvents = await gideon.gcalGetDay(event.date);
+    if (dayEvents.ok && dayEvents.events.length > 0) {
+      eventSummary += `\nYour day (${event.date}):\n`;
+      for (const e of dayEvents.events) {
+        const eStart = e.start ? new Date(e.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "all day";
+        const eEnd = e.end ? new Date(e.end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+        eventSummary += `  ${eStart}${eEnd ? "–" + eEnd : ""}: ${e.title}\n`;
+      }
+    }
+
+    addAIMessage(eventSummary, "assistant");
+
+    // Step 3: Add confirm/edit buttons
+    const actionDiv = document.createElement("div");
+    actionDiv.className = "ai-msg system";
+    actionDiv.style.cssText = "display:flex;gap:6px;flex-wrap:wrap";
+
+    const confirmBtn = document.createElement("button");
+    confirmBtn.style.cssText = "padding:4px 12px;background:#1a3a0a;border:1px solid #22c55e;color:#86efac;border-radius:4px;cursor:pointer;font-size:11px";
+    confirmBtn.textContent = "Add to Calendar";
+    confirmBtn.addEventListener("click", async () => {
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = "Adding...";
+      const result = await gideon.gcalCreateEvent(event);
+      if (result.ok) {
+        addAIMessage(`Event created! ${result.link ? result.link : ""}`, "system");
+      } else {
+        addAIMessage("Failed: " + result.error, "error");
+      }
+      actionDiv.remove();
+    });
+
+    const editBtn = document.createElement("button");
+    editBtn.style.cssText = "padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px";
+    editBtn.textContent = "Edit Details";
+    editBtn.addEventListener("click", () => {
+      const newTitle = prompt("Title:", event.title);
+      if (newTitle !== null) event.title = newTitle;
+      const newDate = prompt("Date (YYYY-MM-DD):", event.date);
+      if (newDate !== null) event.date = newDate;
+      const newStart = prompt("Start time (HH:MM):", event.startTime);
+      if (newStart !== null) event.startTime = newStart;
+      const newEnd = prompt("End time (HH:MM):", event.endTime);
+      if (newEnd !== null) event.endTime = newEnd;
+      const newLoc = prompt("Location:", event.location || "");
+      if (newLoc !== null) event.location = newLoc;
+      addAIMessage(`Updated: ${event.title} on ${event.date} ${event.startTime}–${event.endTime}`, "system");
+    });
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.style.cssText = "padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", () => { actionDiv.remove(); addAIMessage("Cancelled.", "system"); });
+
+    actionDiv.appendChild(confirmBtn);
+    actionDiv.appendChild(editBtn);
+    actionDiv.appendChild(cancelBtn);
+    $("#aiMessages").appendChild(actionDiv);
+    $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
+  });
+
   $("#btnAddToList").addEventListener("change", async (e) => {
     const list = e.target.value;
     if (!list || !currentMsg) { e.target.value = ""; return; }
@@ -611,6 +709,8 @@ async function openSettings() {
   $("#cfgSmtpSecure").checked = cfg.smtpSecure || false;
   const aiKey = await gideon.aiGetKey();
   $("#cfgApiKey").value = aiKey || "";
+  const gcalToken = await gideon.gcalGetToken();
+  $("#cfgGcalToken").value = gcalToken || "";
   const smsCfg = await gideon.smsGetConfig();
   $("#cfgSmsTo").value = smsCfg.smsTo || "";
   $("#cfgTextbeltKey").value = smsCfg.textbeltKey || "";
@@ -660,6 +760,8 @@ async function saveSettingsQuiet() {
   await gideon.saveAccount(cfg);
   const apiKey = $("#cfgApiKey").value.trim();
   if (apiKey) await gideon.aiSaveKey(apiKey);
+  const gcalToken = $("#cfgGcalToken").value.trim();
+  if (gcalToken) await gideon.gcalSaveToken(gcalToken);
   await gideon.smsSaveConfig({
     smsTo: $("#cfgSmsTo").value.trim(),
     textbeltKey: $("#cfgTextbeltKey").value.trim(),

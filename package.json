@@ -25,6 +25,7 @@
     "auto-launch": "^5.0.6",
     "dompurify": "^3.3.3",
     "electron-store": "^11.0.2",
+    "googleapis": "^171.4.0",
     "imapflow": "^1.2.16",
     "mailparser": "^3.9.5",
     "marked": "^17.0.5",

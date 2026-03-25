@@ -42,6 +42,7 @@
             <button id="btnForward">Forward</button>
             <button id="btnDelete" class="danger">Delete</button>
             <button id="btnStar" title="Star">&#9734;</button>
+            <button id="btnTask" title="Create calendar event from email" style="color:#f59e0b">&#128197; Task</button>
             <button id="btnScan" title="Security scan" style="color:#22c55e">&#128737; Scan</button>
             <select id="btnAddToList" style="padding:5px 8px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;font-size:12px;cursor:pointer">
               <option value="">Add sender to...</option>
@@ -102,6 +103,9 @@
       <hr>
       <label>Anthropic API Key<input type="password" id="cfgApiKey" placeholder="sk-ant-..." /></label>
       <div style="padding:4px 20px"><button id="cfgAiVerify" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Verify API Key</button> <span id="cfgAiResult" style="font-size:11px"></span></div>
+      <hr>
+      <label>Google Calendar OAuth Token<input type="password" id="cfgGcalToken" placeholder="OAuth access token" /></label>
+      <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">Get from <span style="color:var(--accent)">OAuth Playground</span> (developers.google.com/oauthplayground) with Calendar scope</div>
       <hr>
       <label>Phone Number (SMS)<input type="text" id="cfgSmsTo" placeholder="6049928450" /></label>
       <label>Textbelt API Key<input type="text" id="cfgTextbeltKey" placeholder="Leave blank for 1 free SMS/day" /></label>

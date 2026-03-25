@@ -78,6 +78,14 @@ contextBridge.exposeInMainWorld("gideon", {
   convoSaveConfig: (cfg) => ipcRenderer.invoke("convo-save-config", cfg),
   convoTest:       ()    => ipcRenderer.invoke("convo-test"),
 
+  // Calendar
+  aiExtractEvent:    (email)  => ipcRenderer.invoke("ai-extract-event", email),
+  gcalCreateEvent:   (event)  => ipcRenderer.invoke("gcal-create-event", event),
+  gcalGetDay:        (date)   => ipcRenderer.invoke("gcal-get-day", date),
+  gcalCheckConflicts:(event)  => ipcRenderer.invoke("gcal-check-conflicts", event),
+  gcalGetToken:      ()       => ipcRenderer.invoke("gcal-get-token"),
+  gcalSaveToken:     (token)  => ipcRenderer.invoke("gcal-save-token", token),
+
   // Standing Instructions
   instructionsGet:    ()      => ipcRenderer.invoke("instructions-get"),
   instructionsAdd:    (text)  => ipcRenderer.invoke("instructions-add", text),
