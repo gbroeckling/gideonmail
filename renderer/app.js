@@ -152,13 +152,64 @@ function bindEvents() {
     $("#aiMessages").appendChild(calDiv);
     $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
 
-    // Step 3: Add confirm/edit buttons
+    // Step 3: Attendee approval (if any detected)
+    event.attendeesApproved = false;
+    if (event.attendees?.length) {
+      const attendeeDiv = document.createElement("div");
+      attendeeDiv.className = "ai-msg assistant";
+      attendeeDiv.style.padding = "8px 12px";
+
+      const attHeader = document.createElement("div");
+      attHeader.style.cssText = "font-size:11px;color:#ff9f43;font-weight:600;margin-bottom:4px";
+      attHeader.textContent = `${event.attendees.length} attendee${event.attendees.length > 1 ? "s" : ""} detected — invite them?`;
+      attendeeDiv.appendChild(attHeader);
+
+      for (const email of event.attendees) {
+        const row = document.createElement("div");
+        row.style.cssText = "font-size:11px;color:var(--fg2);padding:1px 0";
+        row.textContent = `  ${email}`;
+        attendeeDiv.appendChild(row);
+      }
+
+      const attActions = document.createElement("div");
+      attActions.style.cssText = "display:flex;gap:6px;margin-top:6px";
+
+      const inviteBtn = document.createElement("button");
+      inviteBtn.style.cssText = "padding:3px 10px;background:#1a3a0a;border:1px solid #4ade80;color:#86efac;border-radius:3px;cursor:pointer;font-size:10px";
+      inviteBtn.textContent = "Yes, invite them";
+      inviteBtn.addEventListener("click", () => {
+        event.attendeesApproved = true;
+        inviteBtn.textContent = "Will invite";
+        inviteBtn.disabled = true;
+        noInviteBtn.disabled = true;
+        noInviteBtn.style.opacity = "0.3";
+      });
+
+      const noInviteBtn = document.createElement("button");
+      noInviteBtn.style.cssText = "padding:3px 10px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:3px;cursor:pointer;font-size:10px";
+      noInviteBtn.textContent = "No, just my calendar";
+      noInviteBtn.addEventListener("click", () => {
+        event.attendeesApproved = false;
+        noInviteBtn.textContent = "No invites";
+        noInviteBtn.disabled = true;
+        inviteBtn.disabled = true;
+        inviteBtn.style.opacity = "0.3";
+      });
+
+      attActions.appendChild(inviteBtn);
+      attActions.appendChild(noInviteBtn);
+      attendeeDiv.appendChild(attActions);
+      $("#aiMessages").appendChild(attendeeDiv);
+      $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
+    }
+
+    // Step 4: Add confirm/edit buttons
     const actionDiv = document.createElement("div");
     actionDiv.className = "ai-msg system";
     actionDiv.style.cssText = "display:flex;gap:6px;flex-wrap:wrap";
 
     const confirmBtn = document.createElement("button");
-    confirmBtn.style.cssText = "padding:4px 12px;background:#1a3a0a;border:1px solid #22c55e;color:#86efac;border-radius:4px;cursor:pointer;font-size:11px";
+    confirmBtn.style.cssText = "padding:4px 12px;background:#1a3a0a;border:1px solid #4ade80;color:#86efac;border-radius:4px;cursor:pointer;font-size:11px";
     confirmBtn.textContent = "Add to Calendar";
     confirmBtn.addEventListener("click", async () => {
       confirmBtn.disabled = true;

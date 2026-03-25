@@ -749,11 +749,11 @@ async function autoTriageNewMail(messages) {
                 const token = await googleAuth.getToken();
                 const calId = store.get("google_calendar_id") || "primary";
                 const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+                // Auto-calendar never invites attendees — only manual Task with approval does
                 const body = JSON.stringify({
                   summary: event.title, description: event.description || "", location: event.location || "",
                   start: { dateTime: `${event.date}T${event.startTime || "09:00"}:00`, timeZone: timezone },
                   end: { dateTime: `${event.date}T${event.endTime || "10:00"}:00`, timeZone: timezone },
-                  attendees: (event.attendees || []).filter(Boolean).map((e) => ({ email: e })),
                 });
                 const https = require("https");
                 await new Promise((resolve) => {
@@ -871,7 +871,8 @@ async function autoTriageNewMail(messages) {
     const client = getAnthropicClient();
     const account = store.get("account") || {};
 
-    const emailList = newMsgs.slice(0, 5).map((m) => {
+    // Only triage SMS-eligible emails (excludes greylist + blacklist)
+    const emailList = smsEligible.slice(0, 5).map((m) => {
       return `From: ${m.from?.name || m.from?.address || "Unknown"}\nSubject: ${m.subject}\nDate: ${m.date}`;
     }).join("\n---\n");
 
@@ -890,12 +891,12 @@ Be very selective — only flag truly urgent emails.${getInstructionsBlock()}`,
     const urgentLines = triageText.split("\n").filter((l) => l.toUpperCase().startsWith("URGENT"));
 
     if (urgentLines.length > 0) {
-      const urgentSummary = newMsgs.slice(0, urgentLines.length).map((m, i) => {
+      const urgentSummary = smsEligible.slice(0, urgentLines.length).map((m, i) => {
         return `${m.from?.name || m.from?.address}: ${m.subject}`;
       }).join("\n");
 
       await sendSMS(`GideonMail: ${urgentLines.length} urgent email${urgentLines.length > 1 ? "s" : ""}:\n${urgentSummary}`);
-      newMsgs.slice(0, urgentLines.length).forEach((m) => _addSmsSentUid(m.uid));
+      smsEligible.slice(0, urgentLines.length).forEach((m) => _addSmsSentUid(m.uid));
     }
   } catch (e) {
     console.error("AI auto-triage failed:", e.message);
@@ -2147,20 +2148,24 @@ ipcMain.handle("gcal-create-event", async (_, event) => {
     const endDateTime = `${event.date}T${event.endTime || "10:00"}:00`;
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-    const body = JSON.stringify({
+    const eventBody = {
       summary: event.title,
       description: event.description || "",
       location: event.location || "",
       start: { dateTime: startDateTime, timeZone: timezone },
       end: { dateTime: endDateTime, timeZone: timezone },
-      attendees: (event.attendees || []).filter(Boolean).map((e) => ({ email: e })),
-    });
+    };
+    // Only include attendees if explicitly approved (event.attendeesApproved === true)
+    if (event.attendeesApproved && event.attendees?.length) {
+      eventBody.attendees = event.attendees.filter(Boolean).map((e) => ({ email: e }));
+    }
+    const body = JSON.stringify(eventBody);
 
     const https = require("https");
     const res = await new Promise((resolve, reject) => {
       const req = https.request({
         hostname: "www.googleapis.com",
-        path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?sendUpdates=all`,
+        path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?sendUpdates=none`,
         method: "POST",
         headers: {
           "Authorization": `Bearer ${token}`,
