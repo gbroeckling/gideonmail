@@ -79,38 +79,78 @@ function bindEvents() {
     }
     const event = extracted.event;
 
-    // Step 2: Show extracted details and check for conflicts
-    let eventSummary = `Event extracted:\n` +
-      `  Title: ${event.title}\n` +
-      `  Date: ${event.date}\n` +
-      `  Time: ${event.startTime} – ${event.endTime}\n` +
-      `  Location: ${event.location || "(none)"}\n` +
-      `  Attendees: ${event.attendees?.length ? event.attendees.join(", ") : "(none)"}\n` +
-      `  Description: ${event.description || "(none)"}`;
+    // Step 2: Show extracted details
+    addAIMessage(
+      `Event: ${event.title}\n` +
+      `Date: ${event.date}  Time: ${event.startTime} – ${event.endTime}\n` +
+      `Location: ${event.location || "(none)"}\n` +
+      `Attendees: ${event.attendees?.length ? event.attendees.join(", ") : "(none)"}`,
+      "assistant"
+    );
 
-    // Check conflicts
-    const conflicts = await gideon.gcalCheckConflicts(event);
-    if (conflicts.ok && conflicts.conflicts.length > 0) {
-      eventSummary += `\n\nCONFLICTS:\n`;
-      for (const c of conflicts.conflicts) {
-        const cStart = c.start ? new Date(c.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "?";
-        const cEnd = c.end ? new Date(c.end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "?";
-        eventSummary += `  ${cStart}–${cEnd}: ${c.title}\n`;
-      }
-    }
-
-    // Show day's events
+    // Step 3: Fetch and display the day's calendar as a visual timeline
     const dayEvents = await gideon.gcalGetDay(event.date);
+    const calDiv = document.createElement("div");
+    calDiv.className = "ai-msg assistant";
+    calDiv.style.padding = "8px 12px";
+
+    const dayHeader = document.createElement("div");
+    dayHeader.style.cssText = "font-weight:700;font-size:12px;color:#f59e0b;margin-bottom:6px";
+    dayHeader.textContent = `Your calendar — ${event.date}`;
+    calDiv.appendChild(dayHeader);
+
+    const timeline = document.createElement("div");
+    timeline.style.cssText = "display:flex;flex-direction:column;gap:2px";
+
+    // Check for conflicts
+    const proposedStart = event.startTime || "09:00";
+    const proposedEnd = event.endTime || "10:00";
+    let hasConflict = false;
+
     if (dayEvents.ok && dayEvents.events.length > 0) {
-      eventSummary += `\nYour day (${event.date}):\n`;
-      for (const e of dayEvents.events) {
-        const eStart = e.start ? new Date(e.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "all day";
-        const eEnd = e.end ? new Date(e.end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-        eventSummary += `  ${eStart}${eEnd ? "–" + eEnd : ""}: ${e.title}\n`;
+      for (const ev of dayEvents.events) {
+        const evStart = ev.start ? new Date(ev.start) : null;
+        const evEnd = ev.end ? new Date(ev.end) : null;
+        const startStr = evStart ? evStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "all day";
+        const endStr = evEnd ? evEnd.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+
+        // Check overlap with proposed event
+        const evStartHM = evStart ? `${String(evStart.getHours()).padStart(2,"0")}:${String(evStart.getMinutes()).padStart(2,"0")}` : "";
+        const evEndHM = evEnd ? `${String(evEnd.getHours()).padStart(2,"0")}:${String(evEnd.getMinutes()).padStart(2,"0")}` : "";
+        const isConflict = evStartHM && evEndHM && proposedStart < evEndHM && proposedEnd > evStartHM;
+        if (isConflict) hasConflict = true;
+
+        const row = document.createElement("div");
+        row.style.cssText = `display:flex;align-items:center;gap:8px;padding:3px 6px;border-radius:3px;font-size:11px;${isConflict ? "background:#7f1d1d;border:1px solid #ef4444" : "background:#1e293b"}`;
+        row.innerHTML = `<span style="color:${isConflict ? "#fca5a5" : "#94a3b8"};min-width:90px;font-family:monospace">${startStr}${endStr ? " – " + endStr : ""}</span>` +
+          `<span style="color:${isConflict ? "#fca5a5" : "var(--fg)"}">${ev.title}</span>` +
+          (isConflict ? '<span style="color:#ef4444;font-size:9px;font-weight:700"> CONFLICT</span>' : '');
+        timeline.appendChild(row);
       }
+    } else {
+      const empty = document.createElement("div");
+      empty.style.cssText = "font-size:11px;color:#22c55e;padding:4px 0";
+      empty.textContent = "No events scheduled — day is free!";
+      timeline.appendChild(empty);
     }
 
-    addAIMessage(eventSummary, "assistant");
+    // Show the proposed event in the timeline
+    const proposedRow = document.createElement("div");
+    proposedRow.style.cssText = `display:flex;align-items:center;gap:8px;padding:3px 6px;border-radius:3px;font-size:11px;background:#1a3a0a;border:1px solid #22c55e;margin-top:4px`;
+    proposedRow.innerHTML = `<span style="color:#86efac;min-width:90px;font-family:monospace">${proposedStart} – ${proposedEnd}</span>` +
+      `<span style="color:#86efac;font-weight:600">${event.title} (NEW)</span>`;
+    timeline.appendChild(proposedRow);
+
+    if (hasConflict) {
+      const warn = document.createElement("div");
+      warn.style.cssText = "font-size:11px;color:#ef4444;font-weight:600;padding:4px 0;margin-top:4px";
+      warn.textContent = "⚠ Time conflict detected — consider changing the time";
+      timeline.appendChild(warn);
+    }
+
+    calDiv.appendChild(timeline);
+    $("#aiMessages").appendChild(calDiv);
+    $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
 
     // Step 3: Add confirm/edit buttons
     const actionDiv = document.createElement("div");
