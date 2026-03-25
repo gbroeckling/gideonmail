@@ -395,13 +395,23 @@ function bindEvents() {
 
 // ── Folders ─────────────────────────────────────────────────────────────────
 async function loadFolders() {
-  let folders = await gideon.listFolders();
-  // Retry once after 2s if connection wasn't ready
-  if (folders.error) {
-    await new Promise((r) => setTimeout(r, 2000));
+  console.log("loadFolders: starting...");
+  let folders;
+  try {
     folders = await gideon.listFolders();
+  } catch (e) {
+    console.error("loadFolders: exception", e);
+    return;
   }
-  if (folders.error || !Array.isArray(folders)) return;
+  console.log("loadFolders: got", typeof folders, Array.isArray(folders) ? folders.length + " items" : JSON.stringify(folders)?.substring(0, 100));
+  // Retry once after 2s if connection wasn't ready
+  if (!Array.isArray(folders) || folders.error) {
+    console.log("loadFolders: retrying in 2s...");
+    await new Promise((r) => setTimeout(r, 2000));
+    try { folders = await gideon.listFolders(); } catch (e) { console.error("loadFolders retry failed:", e); return; }
+    console.log("loadFolders: retry got", typeof folders, Array.isArray(folders) ? folders.length + " items" : "not array");
+  }
+  if (!Array.isArray(folders) || !folders.length) { console.log("loadFolders: no folders to show"); return; }
 
   const list = $("#folderList");
   list.innerHTML = "";
