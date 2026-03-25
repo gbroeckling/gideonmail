@@ -69,6 +69,14 @@ function bindEvents() {
     $("#cfgAiResult").textContent = r.ok ? "Verified!" : "Failed: " + r.message;
     $("#cfgAiResult").style.color = r.ok ? "var(--success)" : "var(--danger)";
   });
+  $("#cfgConvoTest").addEventListener("click", async () => {
+    $("#cfgConvoResult").textContent = "Checking...";
+    $("#cfgConvoResult").style.color = "";
+    await saveSettingsQuiet();
+    const r = await gideon.convoTest();
+    $("#cfgConvoResult").textContent = r.message;
+    $("#cfgConvoResult").style.color = r.ok ? "var(--success)" : "var(--danger)";
+  });
   $("#cfgSmsTest").addEventListener("click", async () => {
     $("#cfgSmsResult").textContent = "Sending...";
     await saveSettingsQuiet();
@@ -426,6 +434,12 @@ async function openSettings() {
   $("#cfgSmsTo").value = smsCfg.smsTo || "";
   $("#cfgTextbeltKey").value = smsCfg.textbeltKey || "";
   $("#cfgSmsResult").textContent = "";
+  const convoCfg = await gideon.convoGetConfig();
+  $("#cfgConvoEnabled").checked = convoCfg.enabled !== false;
+  $("#cfgConvoMinReplies").value = convoCfg.minReplies || 2;
+  $("#cfgConvoLookback").value = convoCfg.lookbackMonths || 6;
+  $("#cfgConvoInterval").value = convoCfg.checkIntervalMin || 60;
+  $("#cfgConvoResult").textContent = "";
   $("#cfgTestResult").textContent = "";
   $("#settingsModal").style.display = "flex";
 }
@@ -466,6 +480,12 @@ async function saveSettingsQuiet() {
   await gideon.smsSaveConfig({
     smsTo: $("#cfgSmsTo").value.trim(),
     textbeltKey: $("#cfgTextbeltKey").value.trim(),
+  });
+  await gideon.convoSaveConfig({
+    enabled: $("#cfgConvoEnabled").checked,
+    minReplies: parseInt($("#cfgConvoMinReplies").value) || 2,
+    lookbackMonths: parseInt($("#cfgConvoLookback").value) || 6,
+    checkIntervalMin: parseInt($("#cfgConvoInterval").value) || 60,
   });
 }
 

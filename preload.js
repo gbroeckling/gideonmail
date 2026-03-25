@@ -29,6 +29,11 @@ contextBridge.exposeInMainWorld("gideon", {
   aiChat:        (msg, ctx)      => ipcRenderer.invoke("ai-chat", msg, ctx),
   aiClearHistory:()              => ipcRenderer.invoke("ai-clear-history"),
 
+  // Conversation Alerts
+  convoGetConfig:  ()    => ipcRenderer.invoke("convo-get-config"),
+  convoSaveConfig: (cfg) => ipcRenderer.invoke("convo-save-config", cfg),
+  convoTest:       ()    => ipcRenderer.invoke("convo-test"),
+
   // Standing Instructions
   instructionsGet:    ()      => ipcRenderer.invoke("instructions-get"),
   instructionsAdd:    (text)  => ipcRenderer.invoke("instructions-add", text),

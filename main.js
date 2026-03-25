@@ -422,6 +422,12 @@ async function sendSMS(message) {
 }
 
 async function checkActiveConversations(newMsgs) {
+  // Check if enabled
+  if (store.get("convo_alert_enabled") === false) return [];
+
+  const minReplies = store.get("convo_min_replies") || 2;
+  const lookbackMonths = store.get("convo_lookback_months") || 6;
+
   const client = await getImapClient();
   const alerts = [];
 
@@ -433,11 +439,10 @@ async function checkActiveConversations(newMsgs) {
     if (node.folders) node.folders.forEach(findSent);
   }
   findSent(tree);
-  if (!sentPath) return alerts; // no Sent folder found
+  if (!sentPath) return alerts;
 
-  // 6 months ago
-  const sixMonthsAgo = new Date();
-  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+  const lookbackDate = new Date();
+  lookbackDate.setMonth(lookbackDate.getMonth() - lookbackMonths);
 
   const lock = await client.getMailboxLock(sentPath);
   try {
@@ -454,10 +459,10 @@ async function checkActiveConversations(newMsgs) {
       try {
         const sentUids = await client.search({
           subject: baseSubject,
-          since: sixMonthsAgo,
+          since: lookbackDate,
         }, { uid: true });
 
-        if (sentUids.length >= 2) {
+        if (sentUids.length >= minReplies) {
           alerts.push({
             uid: msg.uid,
             subject: msg.subject,
@@ -565,7 +570,8 @@ async function startIdle() {
       mainWindow?.webContents?.send("inbox-updated", initial);
     } catch (e) {}
 
-    // Re-check inbox every 60 minutes (one AI call per batch of new emails)
+    // Re-check inbox on configured interval
+    const checkMin = store.get("convo_check_interval_min") || 60;
     const interval = setInterval(async () => {
       try {
         const result = await fetchInbox(0, 50);
@@ -574,7 +580,7 @@ async function startIdle() {
       } catch (e) {
         // reconnect on next cycle
       }
-    }, 3600000);
+    }, checkMin * 60000);
 
     app.on("before-quit", () => clearInterval(interval));
   } catch (e) {
@@ -1128,6 +1134,52 @@ ipcMain.handle("sms-test", async (_, msg) => {
     await sendSMS(msg || "GideonMail test: SMS notifications are working.");
     return { ok: true };
   } catch (e) { return { error: e.message }; }
+});
+
+// ── Conversation alert settings ─────────────────────────────────────────
+ipcMain.handle("convo-get-config", () => {
+  return {
+    enabled: store.get("convo_alert_enabled") !== false,
+    minReplies: store.get("convo_min_replies") || 2,
+    lookbackMonths: store.get("convo_lookback_months") || 6,
+    checkIntervalMin: store.get("convo_check_interval_min") || 60,
+  };
+});
+
+ipcMain.handle("convo-save-config", (_, cfg) => {
+  if (cfg.enabled !== undefined) store.set("convo_alert_enabled", cfg.enabled);
+  if (cfg.minReplies !== undefined) store.set("convo_min_replies", cfg.minReplies);
+  if (cfg.lookbackMonths !== undefined) store.set("convo_lookback_months", cfg.lookbackMonths);
+  if (cfg.checkIntervalMin !== undefined) store.set("convo_check_interval_min", cfg.checkIntervalMin);
+  return { ok: true };
+});
+
+ipcMain.handle("convo-test", async () => {
+  try {
+    // Fetch latest inbox
+    const result = await fetchInbox(0, 50);
+    const msgs = (result.messages || []).filter((m) => !m.seen);
+    if (!msgs.length) return { ok: false, message: "No unread emails to check" };
+
+    const alerts = await checkActiveConversations(msgs);
+    if (!alerts.length) {
+      return { ok: true, message: `Checked ${msgs.length} unread emails — none match active conversation criteria` };
+    }
+
+    const summary = alerts.map((a) =>
+      `${a.from}: "${a.subject}" (${a.replyCount} replies)`
+    ).join("\n");
+
+    // Send the SMS
+    const smsTo = store.get("sms_to");
+    if (smsTo) {
+      await sendSMS(`GideonMail: ${alerts.length} email${alerts.length > 1 ? "s" : ""} in active conversations:\n${summary}`);
+    }
+
+    return { ok: true, message: `Found ${alerts.length} active conversation${alerts.length > 1 ? "s" : ""}:\n${summary}${smsTo ? "\nSMS sent!" : "\n(No phone number configured — SMS not sent)"}` };
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
 });
 
 ipcMain.handle("ai-triage", async (_, messages) => {

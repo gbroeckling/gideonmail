@@ -100,6 +100,13 @@
       <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">Free: 1 SMS/day. Or get a key at <span style="color:var(--accent)">textbelt.com</span> ($10 = 1000 texts)</div>
       <div style="padding:4px 20px"><button id="cfgSmsTest" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Send Test SMS</button> <span id="cfgSmsResult" style="font-size:11px"></span></div>
       <hr>
+      <div style="padding:6px 20px;font-size:11px;color:#a78bfa;font-weight:600">Conversation Alerts</div>
+      <label><input type="checkbox" id="cfgConvoEnabled" checked /> Enable conversation alerts</label>
+      <label>Min replies to trigger alert<input type="number" id="cfgConvoMinReplies" value="2" min="1" max="50" /></label>
+      <label>Lookback period (months)<input type="number" id="cfgConvoLookback" value="6" min="1" max="24" /></label>
+      <label>Check interval (minutes)<input type="number" id="cfgConvoInterval" value="60" min="5" max="1440" /></label>
+      <div style="padding:4px 20px"><button id="cfgConvoTest" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Test Conversation Alert Now</button> <span id="cfgConvoResult" style="font-size:11px;white-space:pre-wrap"></span></div>
+      <hr>
       <div class="settings-actions">
         <button id="cfgTest">Test Connection</button>
         <span id="cfgTestResult"></span>
