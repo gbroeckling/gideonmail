@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld("gideon", {
   instructionsAdd:    (text)  => ipcRenderer.invoke("instructions-add", text),
   instructionsRemove: (id)    => ipcRenderer.invoke("instructions-remove", id),
   instructionsToggle: (id)    => ipcRenderer.invoke("instructions-toggle", id),
+  instructionsUpdate: (id, t) => ipcRenderer.invoke("instructions-update", id, t),
 
   onInboxUpdated: (cb) => {
     ipcRenderer.on("inbox-updated", (_, data) => cb(data));

@@ -1466,6 +1466,14 @@ ipcMain.handle("instructions-toggle", (_, id) => {
   return list;
 });
 
+ipcMain.handle("instructions-update", (_, id, text) => {
+  const list = store.get("ai_instructions") || [];
+  const item = list.find((i) => i.id === id);
+  if (item) item.text = text.trim();
+  store.set("ai_instructions", list);
+  return list;
+});
+
 // ── App lifecycle ───────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   createWindow();

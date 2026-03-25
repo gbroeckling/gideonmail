@@ -69,6 +69,18 @@ function bindEvents() {
     $("#cfgAiResult").textContent = r.ok ? "Verified!" : "Failed: " + r.message;
     $("#cfgAiResult").style.color = r.ok ? "var(--success)" : "var(--danger)";
   });
+  // Instructions (Settings)
+  $("#instrAddBtn").addEventListener("click", async () => {
+    const text = $("#instrAddInput").value.trim();
+    if (!text) return;
+    await gideon.instructionsAdd(text);
+    $("#instrAddInput").value = "";
+    renderSettingsInstructions();
+  });
+  $("#instrAddInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") $("#instrAddBtn").click();
+  });
+
   // Whitelist
   $("#wlAddBtn").addEventListener("click", async () => {
     const addr = $("#wlAddAddr").value.trim();
@@ -465,6 +477,7 @@ async function openSettings() {
   $("#cfgTestResult").textContent = "";
   $("#settingsModal").style.display = "flex";
   renderWhitelist();
+  renderSettingsInstructions();
 }
 
 async function testConnection() {
@@ -535,38 +548,121 @@ async function renderWhitelist() {
   const container = $("#whitelistEntries");
   container.innerHTML = "";
 
-  if (!list.length) {
-    container.innerHTML = '<div style="font-size:10px;color:var(--fg2);padding:4px 0">No VIP senders. Add one below.</div>';
-    return;
-  }
+  // Header with count
+  const header = document.createElement("div");
+  header.style.cssText = "font-size:10px;color:var(--accent);padding:2px 0 4px;font-weight:600";
+  header.textContent = list.length ? `${list.length} VIP sender${list.length > 1 ? "s" : ""} — emails from these always trigger SMS` : "No VIP senders. Add one below.";
+  container.appendChild(header);
 
   for (const item of list) {
     const row = document.createElement("div");
-    row.style.cssText = "display:flex;align-items:center;gap:6px;padding:3px 0;font-size:11px;border-bottom:1px solid var(--border)";
+    row.style.cssText = "display:flex;align-items:center;gap:6px;padding:5px 4px;font-size:11px;border-bottom:1px solid var(--border);background:var(--bg2);border-radius:4px;margin-bottom:2px";
 
     const toggle = document.createElement("input");
     toggle.type = "checkbox";
     toggle.checked = item.enabled;
+    toggle.title = item.enabled ? "Enabled — click to disable" : "Disabled — click to enable";
     toggle.addEventListener("change", async () => {
       await gideon.whitelistToggle(item.id);
       renderWhitelist();
     });
 
-    const addr = document.createElement("span");
-    addr.style.cssText = `flex:1;color:${item.enabled ? "var(--fg)" : "var(--fg2)"};${item.enabled ? "" : "text-decoration:line-through"}`;
-    addr.textContent = item.name ? `${item.name} (${item.address})` : item.address;
+    const info = document.createElement("div");
+    info.style.cssText = `flex:1;color:${item.enabled ? "var(--fg)" : "var(--fg2)"};${item.enabled ? "" : "text-decoration:line-through"}`;
+    const addrLine = document.createElement("div");
+    addrLine.textContent = item.address;
+    addrLine.style.cssText = "font-weight:600";
+    info.appendChild(addrLine);
+    if (item.name) {
+      const nameLine = document.createElement("div");
+      nameLine.textContent = item.name;
+      nameLine.style.cssText = "font-size:10px;color:var(--fg2)";
+      info.appendChild(nameLine);
+    }
+
+    const editBtn = document.createElement("button");
+    editBtn.style.cssText = "background:none;border:1px solid var(--bg3);color:var(--fg2);cursor:pointer;font-size:10px;padding:1px 6px;border-radius:3px";
+    editBtn.textContent = "Edit";
+    editBtn.addEventListener("click", () => {
+      const newAddr = prompt("Email or name to match:", item.address);
+      if (newAddr === null) return;
+      const newName = prompt("Label (optional):", item.name || "");
+      gideon.whitelistUpdate(item.id, { address: newAddr, name: newName || "" }).then(renderWhitelist);
+    });
 
     const del = document.createElement("button");
-    del.style.cssText = "background:none;border:none;color:var(--fg2);cursor:pointer;font-size:12px;padding:0 4px";
+    del.style.cssText = "background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;padding:0 4px";
     del.textContent = "\u00d7";
     del.title = "Remove";
     del.addEventListener("click", async () => {
+      if (!confirm(`Remove "${item.name || item.address}" from whitelist?`)) return;
       await gideon.whitelistRemove(item.id);
       renderWhitelist();
     });
 
     row.appendChild(toggle);
-    row.appendChild(addr);
+    row.appendChild(info);
+    row.appendChild(editBtn);
+    row.appendChild(del);
+    container.appendChild(row);
+  }
+}
+
+// ── Instructions Management (Settings) ──────────────────────────────────
+async function renderSettingsInstructions() {
+  const list = await gideon.instructionsGet();
+  const container = $("#instrEntries");
+  container.innerHTML = "";
+
+  const header = document.createElement("div");
+  header.style.cssText = "font-size:10px;color:var(--accent);padding:2px 0 4px;font-weight:600";
+  header.textContent = list.length ? `${list.length} instruction${list.length > 1 ? "s" : ""} — the AI follows these when checking email` : "No instructions yet. Add one below or use 'Save as instruction' in the AI chat.";
+  container.appendChild(header);
+
+  for (const item of list) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:flex-start;gap:6px;padding:5px 4px;font-size:11px;border-bottom:1px solid var(--border);background:var(--bg2);border-radius:4px;margin-bottom:2px";
+
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = item.enabled;
+    toggle.style.marginTop = "2px";
+    toggle.title = item.enabled ? "Active" : "Disabled";
+    toggle.addEventListener("change", async () => {
+      await gideon.instructionsToggle(item.id);
+      renderSettingsInstructions();
+    });
+
+    const text = document.createElement("div");
+    text.style.cssText = `flex:1;color:${item.enabled ? "var(--fg)" : "var(--fg2)"};line-height:1.4;${item.enabled ? "" : "text-decoration:line-through"}`;
+    text.textContent = item.text;
+    const dateLine = document.createElement("div");
+    dateLine.style.cssText = "font-size:9px;color:var(--fg2);margin-top:2px";
+    dateLine.textContent = `Added ${new Date(item.created).toLocaleDateString()}`;
+    text.appendChild(dateLine);
+
+    const editBtn = document.createElement("button");
+    editBtn.style.cssText = "background:none;border:1px solid var(--bg3);color:var(--fg2);cursor:pointer;font-size:10px;padding:1px 6px;border-radius:3px";
+    editBtn.textContent = "Edit";
+    editBtn.addEventListener("click", () => {
+      const newText = prompt("Edit instruction:", item.text);
+      if (newText === null || !newText.trim()) return;
+      gideon.instructionsUpdate(item.id, newText).then(renderSettingsInstructions);
+    });
+
+    const del = document.createElement("button");
+    del.style.cssText = "background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;padding:0 4px";
+    del.textContent = "\u00d7";
+    del.title = "Remove";
+    del.addEventListener("click", async () => {
+      if (!confirm(`Remove instruction: "${item.text.substring(0, 50)}..."?`)) return;
+      await gideon.instructionsRemove(item.id);
+      renderSettingsInstructions();
+    });
+
+    row.appendChild(toggle);
+    row.appendChild(text);
+    row.appendChild(editBtn);
     row.appendChild(del);
     container.appendChild(row);
   }
