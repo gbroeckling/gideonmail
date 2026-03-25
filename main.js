@@ -428,21 +428,27 @@ async function fetchFolder(folderPath, page = 0, perPage = 50) {
 
 // ── Search ──────────────────────────────────────────────────────────────────
 async function searchMessages(query) {
-  const client = await getImapClient();
+  const client = await createFreshImapClient();
+  try {
   const lock = await client.getMailboxLock("INBOX");
 
   try {
-    const uids = await client.search({ or: [{ subject: query }, { from: query }, { to: query }, { body: query }] }, { uid: true });
+    // Search subject first, then from (simple queries work on all servers)
+    let uids = await client.search({ subject: query }, { uid: true });
+    if (!uids.length) {
+      uids = await client.search({ from: query }, { uid: true });
+    }
+    if (!uids.length) {
+      try { uids = await client.search({ to: query }, { uid: true }); } catch (e) {}
+    }
 
     if (!uids.length) return { messages: [], total: 0 };
 
-    const uidRange = uids.slice(-100).join(",");
     const messages = [];
-    for await (const msg of client.fetch(uidRange, {
+    for await (const msg of client.fetch({ uid: uids.slice(-100) }, {
       envelope: true,
       flags: true,
       bodyStructure: true,
-      uid: true,
     })) {
       messages.push({
         uid: msg.uid,
@@ -462,6 +468,9 @@ async function searchMessages(query) {
     return { messages, total: messages.length };
   } finally {
     lock.release();
+  }
+  } finally {
+    try { await client.logout(); } catch (e) {}
   }
 }
 
