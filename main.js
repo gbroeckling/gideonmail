@@ -92,18 +92,27 @@ async function getAiImapClient() {
   const cfg = store.get("account");
   if (!cfg) throw new Error("No account configured");
 
+  // Force reconnect if not usable
+  if (aiImapClient && !aiImapClient.usable) {
+    try { await aiImapClient.logout(); } catch (e) {}
+    aiImapClient = null;
+  }
+
   if (aiImapClient && aiImapClient.usable) return aiImapClient;
+
+  console.log(`AI IMAP connecting: ${cfg.imapHost}:${cfg.imapPort} secure=${cfg.imapSecure}`);
 
   aiImapClient = new ImapFlow({
     host: cfg.imapHost,
     port: cfg.imapPort || 993,
-    secure: cfg.imapSecure !== false,
+    secure: cfg.imapSecure === true,
     auth: { user: cfg.username, pass: cfg.password },
     logger: false,
     tls: { rejectUnauthorized: false },
   });
 
   await aiImapClient.connect();
+  console.log("AI IMAP connected");
   return aiImapClient;
 }
 
@@ -116,7 +125,7 @@ async function getImapClient() {
   imapClient = new ImapFlow({
     host: cfg.imapHost,
     port: cfg.imapPort || 993,
-    secure: cfg.imapSecure !== false,
+    secure: cfg.imapSecure === true,
     auth: { user: cfg.username, pass: cfg.password },
     logger: false,
     tls: { rejectUnauthorized: false },
