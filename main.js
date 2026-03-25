@@ -363,9 +363,14 @@ async function sendMail({ to, cc, bcc, subject, html, text, inReplyTo, reference
 
 // ── Folder list ─────────────────────────────────────────────────────────────
 async function listFolders() {
-  const client = await getImapClient();
+  const client = await createFreshImapClient();
   const folders = [];
-  const tree = await client.listTree();
+  let tree;
+  try {
+    tree = await client.listTree();
+  } finally {
+    try { await client.logout(); } catch (e) {}
+  }
 
   function walk(node) {
     if (node.path) {
