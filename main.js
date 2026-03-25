@@ -738,11 +738,22 @@ async function aiChat(message, emailContext) {
 }
 
 ipcMain.handle("ai-get-key", () => {
-  return store.get("anthropic_api_key") ? "••••••••" : "";
+  const key = store.get("anthropic_api_key") || "";
+  // Only mask if it looks like a real key
+  if (key.startsWith("sk-ant-")) return "••••••••";
+  // Clear corrupt values
+  if (key && !key.startsWith("sk-ant-")) {
+    store.delete("anthropic_api_key");
+    return "";
+  }
+  return "";
 });
 
 ipcMain.handle("ai-save-key", (_, key) => {
   if (key && key !== "••••••••") {
+    if (!key.startsWith("sk-ant-")) {
+      return { ok: false, error: "Invalid key format — must start with sk-ant-" };
+    }
     store.set("anthropic_api_key", key);
     anthropicClient = null;
   }
