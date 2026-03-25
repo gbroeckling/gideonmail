@@ -421,6 +421,61 @@ async function sendSMS(message) {
   }
 }
 
+async function checkActiveConversations(newMsgs) {
+  const client = await getImapClient();
+  const alerts = [];
+
+  // Find the Sent folder
+  const tree = await client.listTree();
+  let sentPath = null;
+  function findSent(node) {
+    if (node.specialUse === "\\Sent" || /^sent/i.test(node.name)) { sentPath = node.path; return; }
+    if (node.folders) node.folders.forEach(findSent);
+  }
+  findSent(tree);
+  if (!sentPath) return alerts; // no Sent folder found
+
+  // 6 months ago
+  const sixMonthsAgo = new Date();
+  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+  const lock = await client.getMailboxLock(sentPath);
+  try {
+    for (const msg of newMsgs) {
+      // Normalize the subject for thread matching (strip Re:/Fwd: prefixes)
+      const baseSubject = (msg.subject || "")
+        .replace(/^(re|fwd|fw)\s*:\s*/gi, "")
+        .replace(/^(re|fwd|fw)\s*:\s*/gi, "") // double strip
+        .trim();
+
+      if (!baseSubject || baseSubject.length < 3) continue;
+
+      // Search Sent folder for our replies in this thread (last 6 months)
+      try {
+        const sentUids = await client.search({
+          subject: baseSubject,
+          since: sixMonthsAgo,
+        }, { uid: true });
+
+        if (sentUids.length >= 2) {
+          alerts.push({
+            uid: msg.uid,
+            subject: msg.subject,
+            from: msg.from?.name || msg.from?.address || "Unknown",
+            replyCount: sentUids.length,
+          });
+        }
+      } catch (e) {
+        // Search failed for this message, skip
+      }
+    }
+  } finally {
+    lock.release();
+  }
+
+  return alerts;
+}
+
 async function autoTriageNewMail(messages) {
   // Find new unread messages we haven't seen before
   const newMsgs = messages.filter((m) => !m.seen && !lastSeenUids.has(m.uid));
@@ -440,9 +495,24 @@ async function autoTriageNewMail(messages) {
     n.on("click", () => { mainWindow?.show(); mainWindow?.focus(); });
   }
 
-  // AI triage for importance — only if API key configured
-  const apiKey = store.get("anthropic_api_key");
+  // ── Check for active conversations (replied 2+ times in 6 months) ──────
   const smsTo = store.get("sms_to");
+  if (smsTo) {
+    try {
+      const conversationAlerts = await checkActiveConversations(newMsgs);
+      if (conversationAlerts.length > 0) {
+        const summary = conversationAlerts.map((a) =>
+          `${a.from}: ${a.subject} (you replied ${a.replyCount}x)`
+        ).join("\n");
+        await sendSMS(`GideonMail: ${conversationAlerts.length} email${conversationAlerts.length > 1 ? "s" : ""} in active conversations:\n${summary}`);
+      }
+    } catch (e) {
+      console.error("Conversation check failed:", e.message);
+    }
+  }
+
+  // ── AI triage for importance ──────────────────────────────────────────
+  const apiKey = store.get("anthropic_api_key");
   if (!apiKey || !smsTo) return;
 
   try {
