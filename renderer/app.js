@@ -1465,16 +1465,64 @@ async function aiTriageInbox() {
   if (!currentMessages.length) { addAIMessage("No messages to triage.", "error"); return; }
   addAIMessage("Triaging inbox...", "system");
   const result = await gideon.aiTriage(currentMessages);
-  if (result.error) addAIMessage("Error: " + result.error, "error");
-  else addAIMessage(result.text, "assistant");
+  if (result.error) { addAIMessage("Error: " + result.error, "error"); return; }
+  addAIMessage(result.text, "assistant");
+
+  // Add bulk action buttons after triage
+  const bulkDiv = document.createElement("div");
+  bulkDiv.className = "ai-msg system";
+  bulkDiv.style.cssText = "display:flex;flex-wrap:wrap;gap:4px";
+
+  const bulkActions = [
+    { label: "Delete all LOW", action: async () => { addAIMessage("Tell me which emails to delete — e.g., 'delete all newsletters' or 'delete #3, #5, #7'", "system"); } },
+    { label: "Star all URGENT", action: async () => { addAIMessage("Starring urgent emails... Tell me which ones to star.", "system"); } },
+    { label: "Ask AI to act", action: () => { $("#aiInput").value = "Based on the triage, "; $("#aiInput").focus(); } },
+  ];
+
+  for (const ba of bulkActions) {
+    const btn = document.createElement("button");
+    btn.style.cssText = "padding:3px 8px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg);border-radius:4px;cursor:pointer;font-size:10px";
+    btn.textContent = ba.label;
+    btn.addEventListener("click", () => { ba.action(); });
+    bulkDiv.appendChild(btn);
+  }
+
+  $("#aiMessages").appendChild(bulkDiv);
+  $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
 }
 
 async function aiAnalyzeCurrent() {
   if (!currentMsg) { addAIMessage("Open an email first.", "error"); return; }
   addAIMessage("Analyzing email...", "system");
   const result = await gideon.aiAnalyze(currentMsg);
-  if (result.error) addAIMessage("Error: " + result.error, "error");
-  else addAIMessage(result.text, "assistant");
+  if (result.error) { addAIMessage("Error: " + result.error, "error"); return; }
+  addAIMessage(result.text, "assistant");
+
+  // Show quick action buttons based on the analysis
+  const actionsDiv = document.createElement("div");
+  actionsDiv.className = "ai-msg system";
+  actionsDiv.style.cssText = "display:flex;flex-wrap:wrap;gap:4px";
+
+  const actionDefs = [
+    { label: "Reply", icon: "↩", action: () => openCompose("reply") },
+    { label: "Forward", icon: "→", action: () => openCompose("forward") },
+    { label: "Delete", icon: "🗑", action: async () => { if (confirm("Delete this email?")) { await gideon.deleteMessage(currentMsg.uid); addAIMessage("Deleted.", "system"); loadMessages(); } } },
+    { label: "Star", icon: "⭐", action: async () => { await gideon.toggleFlag(currentMsg.uid, "flagged"); addAIMessage("Flagged.", "system"); } },
+    { label: "Archive", icon: "📁", action: () => { addAIMessage("Use drag-and-drop to move to a folder.", "system"); } },
+    { label: "Draft Reply", icon: "✍", action: () => aiDraftReplyCurrent() },
+    { label: "Create Task", icon: "📅", action: () => { $("#btnTask").click(); } },
+  ];
+
+  for (const ad of actionDefs) {
+    const btn = document.createElement("button");
+    btn.style.cssText = "padding:3px 8px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg);border-radius:4px;cursor:pointer;font-size:10px";
+    btn.textContent = `${ad.icon} ${ad.label}`;
+    btn.addEventListener("click", () => { ad.action(); actionsDiv.remove(); });
+    actionsDiv.appendChild(btn);
+  }
+
+  $("#aiMessages").appendChild(actionsDiv);
+  $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
 }
 
 async function aiDraftReplyCurrent() {

@@ -315,7 +315,6 @@
       <div style="display:flex;gap:6px">
         <button id="aiTriage" class="ai-action-btn" title="Triage inbox">Triage</button>
         <button id="aiAnalyze" class="ai-action-btn" title="Analyze current email">Analyze</button>
-        <button id="aiDraft" class="ai-action-btn" title="Draft reply">Draft Reply</button>
         <button id="aiClose" class="icon-btn" style="font-size:14px">&times;</button>
       </div>
     </div>
@@ -330,6 +329,9 @@
       </div>
     </div>
     <div id="aiMessages" class="ai-messages"></div>
+    <div style="padding:4px 12px;display:flex;gap:4px">
+      <button id="aiDraft" class="ai-action-btn" style="flex:1" title="Draft a reply to current email">Draft Reply</button>
+    </div>
     <div class="ai-input-row">
       <input type="text" id="aiInput" placeholder="Ask about this email or give instructions..." />
       <button id="aiSend" class="send-btn" style="padding:6px 14px;font-size:12px">Send</button>
