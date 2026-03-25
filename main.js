@@ -1061,12 +1061,23 @@ async function executeEmailTool(toolName, toolInput, emailContext) {
     case "search_emails": {
       const folder = toolInput.folder || "INBOX";
       const client = await getImapClient();
-      const lock = await client.getMailboxLock(folder);
+      let lock;
       try {
-        const uids = await client.search(
-          { or: [{ subject: toolInput.query }, { from: toolInput.query }, { to: toolInput.query }, { body: toolInput.query }] },
-          { uid: true }
-        );
+        lock = await client.getMailboxLock(folder);
+      } catch (e) {
+        // Lock contention — wait and retry once
+        await new Promise((r) => setTimeout(r, 2000));
+        lock = await client.getMailboxLock(folder);
+      }
+      try {
+        // Search by subject first (most reliable across IMAP servers)
+        let uids = await client.search({ subject: toolInput.query }, { uid: true });
+
+        // If no subject matches, try from
+        if (!uids.length) {
+          uids = await client.search({ from: toolInput.query }, { uid: true });
+        }
+
         if (!uids.length) return { success: true, results: [], message: "No emails found matching: " + toolInput.query };
         const results = [];
         const uidRange = uids.slice(-50).join(",");
@@ -1088,7 +1099,9 @@ async function executeEmailTool(toolName, toolInput, emailContext) {
     case "delete_multiple_emails": {
       if (!toolInput.uids || !toolInput.uids.length) return { error: "No UIDs provided" };
       const client = await getImapClient();
-      const lock = await client.getMailboxLock("INBOX");
+      let lock;
+      try { lock = await client.getMailboxLock("INBOX"); }
+      catch (e) { await new Promise((r) => setTimeout(r, 2000)); lock = await client.getMailboxLock("INBOX"); }
       try {
         const uidRange = toolInput.uids.join(",");
         await client.messageFlagsAdd(uidRange, ["\\Deleted"], { uid: true });
