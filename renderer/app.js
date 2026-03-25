@@ -574,6 +574,7 @@ async function renderWhitelist() {
 
 // ── AI Assistant ────────────────────────────────────────────────────────────
 let aiOpen = false;
+let lastUserMessage = "";
 
 function toggleAI() {
   aiOpen = !aiOpen;
@@ -584,6 +585,29 @@ function addAIMessage(text, role) {
   const div = document.createElement("div");
   div.className = "ai-msg " + role;
   div.textContent = text;
+
+  // Add "Save as rule" button on assistant responses that followed a user instruction
+  if (role === "assistant" && lastUserMessage && text.includes("Actions taken:") || (role === "assistant" && lastUserMessage)) {
+    const saveRule = document.createElement("div");
+    saveRule.style.cssText = "margin-top:6px;padding-top:4px;border-top:1px solid #ffffff15";
+    const btn = document.createElement("button");
+    btn.style.cssText = "background:#7c3aed22;border:1px solid #7c3aed44;color:#a78bfa;padding:2px 8px;border-radius:3px;font-size:10px;cursor:pointer";
+    btn.textContent = "Save as standing instruction";
+    const instrText = lastUserMessage;
+    btn.addEventListener("click", async () => {
+      await gideon.instructionsAdd(instrText);
+      btn.textContent = "Saved!";
+      btn.disabled = true;
+      btn.style.color = "#22c55e";
+      btn.style.borderColor = "#22c55e44";
+      // AI confirms
+      addAIMessage(`New instruction saved: "${instrText}"`, "system");
+      if (instrVisible) renderInstructions();
+    });
+    saveRule.appendChild(btn);
+    div.appendChild(saveRule);
+  }
+
   $("#aiMessages").appendChild(div);
   $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
 }
@@ -636,6 +660,7 @@ async function aiSendChat() {
   input.disabled = true;
   sendBtn.disabled = true;
   sendBtn.textContent = "...";
+  lastUserMessage = msg;
   addAIMessage(msg, "user");
   addAIMessage("Working...", "system");
 
