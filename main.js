@@ -9,11 +9,14 @@ const nodemailer = require("nodemailer");
 const { simpleParser } = require("mailparser");
 
 const store = new Store({ name: "gideonmail-config" });
+const AutoLaunch = (() => { const m = require("auto-launch"); return m.default || m; })();
+const autoLauncher = new AutoLaunch({ name: "GideonMail", isHidden: true });
 
 let mainWindow = null;
 let tray = null;
 let imapClient = null;
 let unreadCount = 0;
+const startHidden = process.argv.includes("--hidden");
 
 // ── Window ──────────────────────────────────────────────────────────────────
 function createWindow() {
@@ -22,6 +25,7 @@ function createWindow() {
     height: 800,
     minWidth: 800,
     minHeight: 600,
+    show: !startHidden,
     title: "GideonMail",
     icon: path.join(__dirname, "assets", "icon.png"),
     backgroundColor: "#0f172a",
@@ -1368,6 +1372,20 @@ ipcMain.handle("sms-test", async (_, msg) => {
 });
 
 // ── SMS Delivery Settings ────────────────────────────────────────────────
+// ── Auto-launch (start on Windows login) ────────────────────────────────
+ipcMain.handle("autolaunch-get", async () => {
+  try { return { enabled: await autoLauncher.isEnabled() }; }
+  catch (e) { return { enabled: false }; }
+});
+
+ipcMain.handle("autolaunch-set", async (_, enabled) => {
+  try {
+    if (enabled) await autoLauncher.enable();
+    else await autoLauncher.disable();
+    return { ok: true, enabled };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
 ipcMain.handle("sms-settings-get", () => _getSmsSettings());
 
 ipcMain.handle("sms-settings-save", (_, cfg) => {

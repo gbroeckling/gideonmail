@@ -133,6 +133,9 @@ function bindEvents() {
     $("#cfgConvoResult").textContent = r.message;
     $("#cfgConvoResult").style.color = r.ok ? "var(--success)" : "var(--danger)";
   });
+  $("#cfgAutoLaunch").addEventListener("change", async (e) => {
+    await gideon.autolaunchSet(e.target.checked);
+  });
   $("#cfgSmsTest").addEventListener("click", async () => {
     $("#cfgSmsResult").textContent = "Sending...";
     await saveSettingsQuiet();
@@ -490,6 +493,8 @@ async function openSettings() {
   $("#cfgSmsTo").value = smsCfg.smsTo || "";
   $("#cfgTextbeltKey").value = smsCfg.textbeltKey || "";
   $("#cfgSmsResult").textContent = "";
+  const alState = await gideon.autolaunchGet();
+  $("#cfgAutoLaunch").checked = alState.enabled;
   const convoCfg = await gideon.convoGetConfig();
   $("#cfgConvoEnabled").checked = convoCfg.enabled !== false;
   $("#cfgConvoMinReplies").value = convoCfg.minReplies || 2;
