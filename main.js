@@ -454,7 +454,7 @@ async function autoTriageNewMail(messages) {
     }).join("\n---\n");
 
     const response = await client.messages.create({
-      model: "claude-sonnet-4-5-20250514",
+      model: "claude-3-haiku-20240307",
       max_tokens: 256,
       system: `You are an email importance filter for ${account.displayName || "the user"}.
 For each email, respond with ONLY "URGENT" or "SKIP" followed by a 5-word reason.
@@ -657,7 +657,7 @@ async function aiTriage(messages) {
   }).join("\n");
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-5-20250514",
+    model: "claude-3-haiku-20240307",
     max_tokens: 1024,
     system: `You are a personal email assistant for ${account.displayName || "the user"}.
 Triage incoming emails: categorize by priority (urgent, normal, low),
@@ -677,7 +677,7 @@ async function aiAnalyzeEmail(email) {
   const content = email.text || email.html?.replace(/<[^>]+>/g, " ").substring(0, 3000) || "(empty)";
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-5-20250514",
+    model: "claude-3-haiku-20240307",
     max_tokens: 1024,
     system: `You are a personal email assistant for ${account.displayName || "the user"}.
 Analyze this email and provide:
@@ -699,7 +699,7 @@ async function aiDraftReply(email, instruction) {
   const content = email.text || email.html?.replace(/<[^>]+>/g, " ").substring(0, 3000) || "";
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-5-20250514",
+    model: "claude-3-haiku-20240307",
     max_tokens: 1024,
     system: `You are drafting an email reply on behalf of ${account.displayName || "the user"} (${account.email || ""}).
 Write a professional, concise reply. Only output the reply body — no subject line, no greeting preamble unless appropriate.
@@ -725,7 +725,7 @@ async function aiChat(message, emailContext) {
     : `You are a personal email assistant for ${account.displayName || "the user"} (${account.email || ""}). Help manage their email — triage, draft replies, suggest actions, answer questions. Be concise.`;
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-5-20250514",
+    model: "claude-3-haiku-20240307",
     max_tokens: 1024,
     system: systemMsg,
     messages: conversationHistory,
@@ -753,7 +753,7 @@ ipcMain.handle("ai-verify-key", async () => {
   try {
     const client = getAnthropicClient();
     const response = await client.messages.create({
-      model: "claude-sonnet-4-5-20250514",
+      model: "claude-3-haiku-20240307",
       max_tokens: 10,
       messages: [{ role: "user", content: "Say OK" }],
     });
