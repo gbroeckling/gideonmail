@@ -1,4 +1,6 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification } = require("electron");
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } = require("electron");
+app.setName("GideonMail");
+if (process.platform === "win32") app.setAppUserModelId("GideonMail");
 const path = require("path");
 const _esm = require("electron-store");
 const Store = _esm.default || _esm;
@@ -623,17 +625,6 @@ async function autoTriageNewMail(messages) {
   if (lastCheck) {
     const sinceLast = Date.now() - new Date(lastCheck).getTime();
     if (sinceLast < 30000) { return; } // checked less than 30s ago, skip
-  }
-
-  // Desktop notification for any new mail
-  if (Notification.isSupported()) {
-    const n = new Notification({
-      title: `${newMsgs.length} new email${newMsgs.length > 1 ? "s" : ""}`,
-      body: newMsgs.map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`).join("\n").substring(0, 200),
-      silent: false,
-    });
-    n.show();
-    n.on("click", () => { mainWindow?.show(); mainWindow?.focus(); });
   }
 
   // ── Whitelist check (always SMS for these senders) ─────────────────────
