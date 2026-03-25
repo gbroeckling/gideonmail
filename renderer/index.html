@@ -94,18 +94,10 @@
       <label>Anthropic API Key<input type="password" id="cfgApiKey" placeholder="sk-ant-..." /></label>
       <div style="padding:4px 20px"><button id="cfgAiVerify" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Verify API Key</button> <span id="cfgAiResult" style="font-size:11px"></span></div>
       <hr>
-      <div style="padding:6px 20px;font-size:11px;color:#a78bfa;font-weight:600">SMS Notifications (free via email-to-SMS)</div>
-      <label>Your Phone Number<input type="text" id="cfgSmsTo" placeholder="6135551234" /></label>
-      <label style="padding:6px 20px;font-size:12px;color:var(--fg2)">Carrier
-        <select id="cfgSmsCarrier" style="display:block;width:100%;margin-top:3px;padding:7px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:13px">
-          <option value="rogers">Rogers</option>
-          <option value="bell">Bell</option>
-          <option value="telus">Telus</option>
-          <option value="fido">Fido</option>
-          <option value="koodo">Koodo</option>
-          <option value="freedom">Freedom</option>
-        </select>
-      </label>
+      <div style="padding:6px 20px;font-size:11px;color:#a78bfa;font-weight:600">SMS Notifications (via Textbelt)</div>
+      <label>Your Phone Number<input type="text" id="cfgSmsTo" placeholder="6049928450" /></label>
+      <label>Textbelt API Key<input type="text" id="cfgTextbeltKey" placeholder="Leave blank for 1 free SMS/day" /></label>
+      <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">Free: 1 SMS/day. Or get a key at <span style="color:var(--accent)">textbelt.com</span> ($10 = 1000 texts)</div>
       <div style="padding:4px 20px"><button id="cfgSmsTest" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Send Test SMS</button> <span id="cfgSmsResult" style="font-size:11px"></span></div>
       <hr>
       <div class="settings-actions">

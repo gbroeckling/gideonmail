@@ -386,45 +386,38 @@ let lastSeenUids = new Set();
 
 async function sendSMS(message) {
   const phone = store.get("sms_to");
-  const carrier = store.get("sms_carrier") || "rogers";
   if (!phone) return;
 
-  const gateways = {
-    rogers:   "pcs.rogers.com",
-    bell:     "txt.bell.ca",
-    telus:    "msg.telus.com",
-    fido:     "fido.ca",
-    koodo:    "msg.telus.com",
-    freedom:  "txt.freedommobile.ca",
-  };
-
-  const gateway = gateways[carrier];
-  if (!gateway) { console.error("Unknown carrier:", carrier); return; }
-
-  // Strip everything except digits from phone number
-  const digits = phone.replace(/\D/g, "").replace(/^1/, ""); // remove country code
-  const smsEmail = `${digits}@${gateway}`;
-
-  const cfg = store.get("account");
-  if (!cfg) return;
+  const key = store.get("textbelt_key") || "textbelt"; // "textbelt" = 1 free/day
+  const digits = phone.replace(/\D/g, "");
+  const fullNumber = digits.startsWith("1") ? digits : "1" + digits;
 
   try {
-    const transport = nodemailer.createTransport({
-      host: cfg.smtpHost,
-      port: cfg.smtpPort || 587,
-      secure: cfg.smtpSecure || false,
-      auth: { user: cfg.username, pass: cfg.password },
-      tls: { rejectUnauthorized: false },
-    });
+    const https = require("https");
+    const postData = JSON.stringify({ phone: fullNumber, message: message.substring(0, 160), key });
 
-    await transport.sendMail({
-      from: cfg.email || cfg.username,
-      to: smsEmail,
-      subject: "",
-      text: message.substring(0, 160), // SMS length limit
+    await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: "textbelt.com",
+        path: "/text",
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(postData) },
+      }, (res) => {
+        let body = "";
+        res.on("data", (d) => { body += d; });
+        res.on("end", () => {
+          const r = JSON.parse(body);
+          if (r.success) resolve(r);
+          else reject(new Error(r.error || "SMS send failed"));
+        });
+      });
+      req.on("error", reject);
+      req.write(postData);
+      req.end();
     });
   } catch (e) {
-    console.error("SMS via email failed:", e.message);
+    console.error("SMS failed:", e.message);
+    throw e;
   }
 }
 
@@ -773,13 +766,13 @@ ipcMain.handle("ai-verify-key", async () => {
 ipcMain.handle("sms-get-config", () => {
   return {
     smsTo: store.get("sms_to") || "",
-    smsCarrier: store.get("sms_carrier") || "rogers",
+    textbeltKey: store.get("textbelt_key") || "",
   };
 });
 
 ipcMain.handle("sms-save-config", (_, cfg) => {
-  if (cfg.smsTo) store.set("sms_to", cfg.smsTo);
-  if (cfg.smsCarrier) store.set("sms_carrier", cfg.smsCarrier);
+  if (cfg.smsTo !== undefined) store.set("sms_to", cfg.smsTo);
+  if (cfg.textbeltKey !== undefined) store.set("textbelt_key", cfg.textbeltKey);
   return { ok: true };
 });
 

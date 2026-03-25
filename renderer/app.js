@@ -424,7 +424,7 @@ async function openSettings() {
   $("#cfgApiKey").value = aiKey || "";
   const smsCfg = await gideon.smsGetConfig();
   $("#cfgSmsTo").value = smsCfg.smsTo || "";
-  $("#cfgSmsCarrier").value = smsCfg.smsCarrier || "rogers";
+  $("#cfgTextbeltKey").value = smsCfg.textbeltKey || "";
   $("#cfgSmsResult").textContent = "";
   $("#cfgTestResult").textContent = "";
   $("#settingsModal").style.display = "flex";
@@ -465,7 +465,7 @@ async function saveSettingsQuiet() {
   if (apiKey) await gideon.aiSaveKey(apiKey);
   await gideon.smsSaveConfig({
     smsTo: $("#cfgSmsTo").value.trim(),
-    smsCarrier: $("#cfgSmsCarrier").value,
+    textbeltKey: $("#cfgTextbeltKey").value.trim(),
   });
 }
 
