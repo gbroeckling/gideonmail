@@ -32,6 +32,10 @@ contextBridge.exposeInMainWorld("gideon", {
   // Security filters
   securityFiltersGet:  () => ipcRenderer.invoke("security-filters-get"),
   securityFiltersSave: (f) => ipcRenderer.invoke("security-filters-save", f),
+  securityApiKeysGet:  () => ipcRenderer.invoke("security-api-keys-get"),
+  securityApiKeysSave: (k) => ipcRenderer.invoke("security-api-keys-save", k),
+  securityScan:        (uid) => ipcRenderer.invoke("security-scan", uid),
+  bayesianTrain:       (text, spam) => ipcRenderer.invoke("bayesian-train", text, spam),
 
   // Auto-check interval
   autocheckGet:  () => ipcRenderer.invoke("autocheck-get"),

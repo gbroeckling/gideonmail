@@ -51,6 +51,26 @@ function bindEvents() {
   $("#btnForward").addEventListener("click", () => openCompose("forward"));
   $("#btnDelete").addEventListener("click", deleteCurrent);
   $("#btnStar").addEventListener("click", starCurrent);
+  $("#btnScan").addEventListener("click", async () => {
+    if (!currentUid) return;
+    $("#scanResult").style.display = "block";
+    $("#scanResult").textContent = "Scanning...";
+    $("#scanResult").style.color = "var(--fg2)";
+    const r = await gideon.securityScan(currentUid);
+    if (r.error) {
+      $("#scanResult").textContent = "Scan error: " + r.error;
+      $("#scanResult").style.color = "var(--danger)";
+    } else if (r.flags && r.flags.length) {
+      $("#scanResult").textContent = "THREATS DETECTED (score: " + r.score + "):\n" + r.details.join("\n");
+      $("#scanResult").style.color = "#ef4444";
+      $("#scanResult").style.background = "#450a0a";
+      $("#scanResult").style.padding = "8px 20px";
+      $("#scanResult").style.borderRadius = "4px";
+    } else {
+      $("#scanResult").textContent = "Clean — no threats detected" + (r.details.length ? "\n" + r.details.join("\n") : "");
+      $("#scanResult").style.color = "#22c55e";
+    }
+  });
 
   // Compose
   $("#composeClose").addEventListener("click", closeCompose);
@@ -677,6 +697,12 @@ async function openRules() {
   $("#sfClamav").checked = sf.clamav || false;
   $("#sfBayesian").checked = sf.bayesian || false;
 
+  // API keys
+  const apiKeys = await gideon.securityApiKeysGet();
+  $("#sfKeyVt").value = apiKeys.virustotal || "";
+  $("#sfKeySb").value = apiKeys.safebrowsing || "";
+  $("#sfKeyAbuse").value = apiKeys.abuseipdb || "";
+
   // Auto-check interval
   const ac = await gideon.autocheckGet();
   $("#sfAutoCheckInterval").value = String(ac.intervalMin || 120);
@@ -718,6 +744,11 @@ async function saveRulesSettings() {
   });
   await gideon.autocheckSave({
     intervalMin: parseInt($("#sfAutoCheckInterval").value) || 120,
+  });
+  await gideon.securityApiKeysSave({
+    virustotal: $("#sfKeyVt").value.trim(),
+    safebrowsing: $("#sfKeySb").value.trim(),
+    abuseipdb: $("#sfKeyAbuse").value.trim(),
   });
 }
 

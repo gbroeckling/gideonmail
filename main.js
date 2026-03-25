@@ -7,10 +7,14 @@ const Store = _esm.default || _esm;
 const { ImapFlow } = require("imapflow");
 const nodemailer = require("nodemailer");
 const { simpleParser } = require("mailparser");
+const security = require("./security");
+let bayesianFilter = null;
 
 const store = new Store({ name: "gideonmail-config" });
 const AutoLaunch = (() => { const m = require("auto-launch"); return m.default || m; })();
 const autoLauncher = new AutoLaunch({ name: "GideonMail", isHidden: true });
+
+bayesianFilter = new security.BayesianFilter(store);
 
 let mainWindow = null;
 let tray = null;
@@ -1435,6 +1439,50 @@ ipcMain.handle("security-filters-get", () => {
 
 ipcMain.handle("security-filters-save", (_, filters) => {
   store.set("security_filters", filters);
+  return { ok: true };
+});
+
+ipcMain.handle("security-api-keys-get", () => {
+  return {
+    virustotal: store.get("api_virustotal") ? "••••••••" : "",
+    safebrowsing: store.get("api_safebrowsing") ? "••••••••" : "",
+    abuseipdb: store.get("api_abuseipdb") ? "••••••••" : "",
+  };
+});
+
+ipcMain.handle("security-api-keys-save", (_, keys) => {
+  if (keys.virustotal && keys.virustotal !== "••••••••") store.set("api_virustotal", keys.virustotal);
+  if (keys.safebrowsing && keys.safebrowsing !== "••••••••") store.set("api_safebrowsing", keys.safebrowsing);
+  if (keys.abuseipdb && keys.abuseipdb !== "••••••••") store.set("api_abuseipdb", keys.abuseipdb);
+  return { ok: true };
+});
+
+// Scan a single email on demand
+ipcMain.handle("security-scan", async (_, uid) => {
+  try {
+    const msg = await fetchMessage(uid);
+    const filters = store.get("security_filters") || {};
+    const apiKeys = { virustotal: store.get("api_virustotal"), safebrowsing: store.get("api_safebrowsing"), abuseipdb: store.get("api_abuseipdb") };
+    // Fetch raw headers
+    const client = await createFreshImapClient();
+    let headers = {};
+    try {
+      const lock = await client.getMailboxLock("INBOX");
+      try {
+        const raw = await client.download(String(uid), undefined, { uid: true });
+        const chunks = []; for await (const c of raw.content) chunks.push(c);
+        const parsed = await simpleParser(Buffer.concat(chunks));
+        headers = parsed.headers ? Object.fromEntries(parsed.headers) : {};
+      } finally { lock.release(); }
+    } finally { try { await client.logout(); } catch(e) {} }
+    const result = await security.scanEmail(msg, headers, filters, apiKeys, bayesianFilter);
+    return result;
+  } catch (e) { return { error: e.message }; }
+});
+
+// Train Bayesian filter
+ipcMain.handle("bayesian-train", (_, text, isSpam) => {
+  if (bayesianFilter) bayesianFilter.train(text, isSpam);
   return { ok: true };
 });
 

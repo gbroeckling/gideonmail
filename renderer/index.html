@@ -42,7 +42,9 @@
             <button id="btnForward">Forward</button>
             <button id="btnDelete" class="danger">Delete</button>
             <button id="btnStar" title="Star">&#9734;</button>
+            <button id="btnScan" title="Security scan" style="color:#22c55e">&#128737; Scan</button>
           </div>
+          <div id="scanResult" style="display:none;padding:4px 20px;font-size:11px;white-space:pre-wrap"></div>
           <div id="readAttachments" class="attachments"></div>
           <iframe id="readBody" sandbox="allow-same-origin" class="read-body"></iframe>
         </div>
@@ -208,6 +210,12 @@
             <strong>Built-in Bayesian Filter</strong> <span style="color:#22c55e;font-size:10px">FREE</span>
             <div style="font-size:10px;color:var(--fg2);margin:2px 0 0 22px">Learns from your flag/delete actions over time. Gets smarter the more you use GideonMail. No external service needed.</div>
           </label>
+        </div>
+        <div style="padding:8px 16px;border-top:1px solid var(--border)">
+          <div style="font-size:11px;color:var(--fg2);font-weight:600;margin-bottom:6px">API Keys (for services that require them)</div>
+          <label style="display:block;padding:3px 0;font-size:11px;color:var(--fg2)">VirusTotal<input type="password" id="sfKeyVt" placeholder="Get free key at virustotal.com" style="display:block;width:100%;margin-top:2px;padding:4px 8px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:11px" /></label>
+          <label style="display:block;padding:3px 0;font-size:11px;color:var(--fg2)">Google Safe Browsing<input type="password" id="sfKeySb" placeholder="Get free key at console.cloud.google.com" style="display:block;width:100%;margin-top:2px;padding:4px 8px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:11px" /></label>
+          <label style="display:block;padding:3px 0;font-size:11px;color:var(--fg2)">AbuseIPDB<input type="password" id="sfKeyAbuse" placeholder="Get free key at abuseipdb.com" style="display:block;width:100%;margin-top:2px;padding:4px 8px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:11px" /></label>
         </div>
         <div style="padding:8px 16px;border-top:1px solid var(--border)">
           <div style="font-size:11px;color:var(--fg2);font-weight:600;margin-bottom:6px">Auto-Check Interval</div>
