@@ -392,8 +392,13 @@ function bindEvents() {
 
 // ── Folders ─────────────────────────────────────────────────────────────────
 async function loadFolders() {
-  const folders = await gideon.listFolders();
-  if (folders.error) return;
+  let folders = await gideon.listFolders();
+  // Retry once after 2s if connection wasn't ready
+  if (folders.error) {
+    await new Promise((r) => setTimeout(r, 2000));
+    folders = await gideon.listFolders();
+  }
+  if (folders.error || !Array.isArray(folders)) return;
 
   const list = $("#folderList");
   list.innerHTML = "";
@@ -454,9 +459,17 @@ async function loadFolders() {
 
 // ── Message list ────────────────────────────────────────────────────────────
 async function loadMessages() {
-  const result = currentFolder === "INBOX"
+  let result = currentFolder === "INBOX"
     ? await gideon.fetchInbox(currentPage)
     : await gideon.fetchFolder(currentFolder, currentPage);
+
+  // Retry once after 2s if connection wasn't ready
+  if (result.error) {
+    await new Promise((r) => setTimeout(r, 2000));
+    result = currentFolder === "INBOX"
+      ? await gideon.fetchInbox(currentPage)
+      : await gideon.fetchFolder(currentFolder, currentPage);
+  }
 
   if (result.error) {
     $("#messageList").innerHTML = `<div class="placeholder" style="font-size:12px;color:#ef4444">${escHtml(result.error)}</div>`;
