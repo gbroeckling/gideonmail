@@ -1813,4 +1813,28 @@ bindWizardEvents();
 if (!localStorage.getItem("gideonmail_wizard_done")) {
   setTimeout(showWizard, 500);
 }
+
+// Check for updates on startup
+(async () => {
+  try {
+    const ver = await gideon.getVersion();
+    const update = await gideon.checkUpdate();
+    // Show version in sidebar
+    const logo = $(".logo");
+    if (logo) logo.title = `GideonMail v${ver}`;
+
+    if (!update.upToDate) {
+      const banner = $("#updateBanner");
+      const text = $("#updateText");
+      if (banner && text) {
+        text.textContent = `Update available: v${update.latest} (you have v${update.current})`;
+        banner.style.display = "block";
+        banner.addEventListener("click", () => {
+          window.open(update.url);
+        });
+      }
+    }
+  } catch (e) {}
+})();
+
 init();

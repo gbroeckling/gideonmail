@@ -1609,6 +1609,58 @@ ipcMain.handle("sms-test", async (_, msg) => {
 
 // ── SMS Delivery Settings ────────────────────────────────────────────────
 // ── Auto-launch (start on Windows login) ────────────────────────────────
+// ── Update checker ──────────────────────────────────────────────────────
+const CURRENT_VERSION = require("./package.json").version;
+
+ipcMain.handle("check-update", async () => {
+  try {
+    const https = require("https");
+    const res = await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: "api.github.com",
+        path: "/repos/gbroeckling/gideonmail/releases/latest",
+        headers: { "User-Agent": "GideonMail/" + CURRENT_VERSION },
+      }, (res) => {
+        let data = "";
+        res.on("data", (d) => { data += d; });
+        res.on("end", () => {
+          try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
+        });
+      });
+      req.on("error", reject);
+      req.end();
+    });
+
+    const latestTag = (res.tag_name || "").replace(/^v/, "");
+    const isPrerelease = res.prerelease || false;
+
+    // Only notify for stable releases (not prerelease)
+    if (isPrerelease) return { upToDate: true, current: CURRENT_VERSION };
+
+    if (latestTag && latestTag !== CURRENT_VERSION) {
+      // Simple semver comparison
+      const cur = CURRENT_VERSION.split(".").map(Number);
+      const lat = latestTag.split(".").map(Number);
+      const isNewer = lat[0] > cur[0] || (lat[0] === cur[0] && lat[1] > cur[1]) || (lat[0] === cur[0] && lat[1] === cur[1] && lat[2] > cur[2]);
+
+      if (isNewer) {
+        return {
+          upToDate: false,
+          current: CURRENT_VERSION,
+          latest: latestTag,
+          url: res.html_url || `https://github.com/gbroeckling/gideonmail/releases/tag/v${latestTag}`,
+          notes: (res.body || "").substring(0, 200),
+        };
+      }
+    }
+    return { upToDate: true, current: CURRENT_VERSION };
+  } catch (e) {
+    return { upToDate: true, current: CURRENT_VERSION, error: e.message };
+  }
+});
+
+ipcMain.handle("get-version", () => CURRENT_VERSION);
+
 ipcMain.handle("autolaunch-get", async () => {
   try { return { enabled: await autoLauncher.isEnabled() }; }
   catch (e) { return { enabled: false }; }

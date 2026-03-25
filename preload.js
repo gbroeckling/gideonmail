@@ -42,6 +42,10 @@ contextBridge.exposeInMainWorld("gideon", {
   autocheckGet:  () => ipcRenderer.invoke("autocheck-get"),
   autocheckSave: (c) => ipcRenderer.invoke("autocheck-save", c),
 
+  // Updates
+  checkUpdate: () => ipcRenderer.invoke("check-update"),
+  getVersion:  () => ipcRenderer.invoke("get-version"),
+
   // Auto-launch
   autolaunchGet: () => ipcRenderer.invoke("autolaunch-get"),
   autolaunchSet: (on) => ipcRenderer.invoke("autolaunch-set", on),
