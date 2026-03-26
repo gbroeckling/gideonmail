@@ -43,6 +43,30 @@ function bindEvents() {
   $("#btnCompose").addEventListener("click", () => openCompose("new"));
   $("#btnSettings").addEventListener("click", openSettings);
   $("#btnRefresh").addEventListener("click", () => { loadFolders(); loadMessages(); });
+
+  // Low Touch toggle
+  async function updateLowTouchUI() {
+    const cfg = await gideon.lowTouchGet();
+    const dot = $("#lowTouchDot");
+    const label = $("#lowTouchLabel");
+    if (cfg.enabled) {
+      dot.style.background = "#4ade80";
+      label.textContent = "Low Touch: ON";
+      label.style.color = "#4ade80";
+    } else {
+      dot.style.background = "#55555e";
+      label.textContent = "Low Touch: OFF";
+      label.style.color = "var(--fg2)";
+    }
+  }
+  $("#lowTouchToggle").addEventListener("click", async () => {
+    const cfg = await gideon.lowTouchGet();
+    const newState = !cfg.enabled;
+    if (newState && !confirm("Enable Low Touch mode?\n\nThis lets AI autonomously:\n• Delete spam\n• Archive newsletters\n• File receipts & notifications\n• Draft replies for your approval\n• Create calendar events from meetings\n• Alert you about deadlines\n• Nudge you about unanswered emails\n\nYou stay in control via action emails on your phone.")) return;
+    await gideon.lowTouchSet({ enabled: newState });
+    updateLowTouchUI();
+  });
+  updateLowTouchUI();
   $("#btnCheckAll").addEventListener("click", async () => {
     $("#btnCheckAll").textContent = "...";
     $("#btnCheckAll").disabled = true;

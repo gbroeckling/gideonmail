@@ -42,6 +42,10 @@ contextBridge.exposeInMainWorld("gideon", {
   autocheckGet:  () => ipcRenderer.invoke("autocheck-get"),
   autocheckSave: (c) => ipcRenderer.invoke("autocheck-save", c),
 
+  // Low Touch
+  lowTouchGet: () => ipcRenderer.invoke("low-touch-get"),
+  lowTouchSet: (cfg) => ipcRenderer.invoke("low-touch-set", cfg),
+
   // Action email relay
   actionEmailGet:  () => ipcRenderer.invoke("action-email-get"),
   actionEmailSave: (cfg) => ipcRenderer.invoke("action-email-save", cfg),

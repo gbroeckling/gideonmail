@@ -927,6 +927,261 @@ function _formatEmailForSms(msg, format) {
   }
 }
 
+// ── Low Touch Autopilot ─────────────────────────────────────────────────
+async function lowTouchEnsureFolders() {
+  // Create AI category folders if they don't exist (only when Low Touch is on)
+  const folders = ["Newsletters", "Receipts", "Notifications"];
+  try {
+    const client = await createFreshImapClient();
+    try {
+      const tree = await client.listTree();
+      const existing = new Set();
+      function walk(n) { if (n.path) existing.add(n.path); if (n.folders) n.folders.forEach(walk); }
+      walk(tree);
+
+      for (const f of folders) {
+        if (!existing.has(f)) {
+          try { await client.mailboxCreate(f); console.log(`Low Touch: created folder "${f}"`); } catch (e) {}
+        }
+      }
+    } finally { try { await client.logout(); } catch (e) {} }
+  } catch (e) { console.error("Low Touch folder setup failed:", e.message); }
+}
+
+async function lowTouchProcess(messages) {
+  if (store.get("low_touch_enabled") !== true) return;
+  if (!store.get("anthropic_api_key")) return;
+
+  // Ensure category folders exist
+  await lowTouchEnsureFolders();
+
+  const sentUids = _getSmsSentUids();
+  const processedKey = "low_touch_processed";
+  const processed = new Set(store.get(processedKey) || []);
+
+  const unread = messages.filter((m) => !m.seen && !processed.has(m.uid));
+  if (!unread.length) return;
+
+  // Only process unknown senders (listed senders handled by normal triage)
+  const unknown = unread.filter((m) => !_senderListStatus(m.from?.address, m.from?.name));
+  if (!unknown.length) return;
+
+  const client = getAnthropicClient();
+  const account = store.get("account") || {};
+  const smsTo = store.get("sms_to");
+
+  for (const msg of unknown.slice(0, 10)) { // max 10 per cycle
+    try {
+      // Step 1: AI categorize
+      const resp = await client.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 150,
+        system: `Categorize this email. Respond with ONLY valid JSON:
+{"category": "personal|receipt|newsletter|action|meeting|deadline|spam|notification",
+ "needsReply": true/false,
+ "deadline": "YYYY-MM-DD or null",
+ "summary": "one sentence summary"}
+
+Categories:
+- personal: from a real person, conversational
+- receipt: purchase confirmation, invoice, payment
+- newsletter: marketing, blog digest, mailing list
+- action: requires a response or decision from the user
+- meeting: about a scheduled event with date/time
+- deadline: contains a due date or time-sensitive request
+- spam: junk, scam, unsolicited
+- notification: automated alert, social media, service update`,
+        messages: [{ role: "user", content: `From: ${msg.from?.name || ""} <${msg.from?.address || ""}>\nSubject: ${msg.subject}\nDate: ${msg.date}` }],
+      });
+
+      let cat = {};
+      try {
+        cat = JSON.parse((resp.content[0]?.text || "").match(/\{[\s\S]*\}/)?.[0] || "{}");
+      } catch (e) { continue; }
+
+      const category = cat.category || "notification";
+      console.log(`Low Touch: ${msg.from?.address} "${msg.subject}" → ${category}`);
+
+      // Step 2: Act based on category
+      if (category === "spam") {
+        // Delete spam
+        try { await deleteMessage(msg.uid); } catch (e) {}
+        console.log(`Low Touch: deleted spam from ${msg.from?.address}`);
+
+      } else if (category === "newsletter") {
+        // Move to Newsletters folder
+        try {
+          const archiveClient = await createFreshImapClient();
+          try {
+            const lock = await archiveClient.getMailboxLock("INBOX");
+            try {
+              try { await archiveClient.messageMove(String(msg.uid), "Newsletters", { uid: true }); }
+              catch (e) {
+                try { await archiveClient.messageMove(String(msg.uid), "Archive", { uid: true }); }
+                catch (e2) { await archiveClient.messageFlagsAdd(String(msg.uid), ["\\Seen"], { uid: true }); }
+              }
+            } finally { lock.release(); }
+          } finally { try { await archiveClient.logout(); } catch (e) {} }
+        } catch (e) {}
+        console.log(`Low Touch: moved newsletter to folder from ${msg.from?.address}`);
+
+      } else if (category === "receipt") {
+        // Move to Receipts folder
+        try {
+          const rcptClient = await createFreshImapClient();
+          try {
+            const lock = await rcptClient.getMailboxLock("INBOX");
+            try {
+              try { await rcptClient.messageMove(String(msg.uid), "Receipts", { uid: true }); }
+              catch (e) { await rcptClient.messageFlagsAdd(String(msg.uid), ["\\Seen"], { uid: true }); }
+            } finally { lock.release(); }
+          } finally { try { await rcptClient.logout(); } catch (e) {} }
+        } catch (e) {}
+        console.log(`Low Touch: filed receipt from ${msg.from?.address}`);
+
+      } else if (category === "notification") {
+        // Move to Notifications folder
+        try {
+          const notifClient = await createFreshImapClient();
+          try {
+            const lock = await notifClient.getMailboxLock("INBOX");
+            try {
+              try { await notifClient.messageMove(String(msg.uid), "Notifications", { uid: true }); }
+              catch (e) { await notifClient.messageFlagsAdd(String(msg.uid), ["\\Seen"], { uid: true }); }
+            } finally { lock.release(); }
+          } finally { try { await notifClient.logout(); } catch (e) {} }
+        } catch (e) {}
+
+      } else if (category === "action" || cat.needsReply) {
+        // AI drafts a reply in the user's voice
+        try {
+          const fullMsg = await fetchMessage(msg.uid);
+          const content = fullMsg.text || fullMsg.html?.replace(/<[^>]+>/g, " ").substring(0, 2000) || "";
+
+          const draftResp = await client.messages.create({
+            model: "claude-haiku-4-5-20251001",
+            max_tokens: 300,
+            system: `You are drafting a reply on behalf of ${account.displayName || "the user"} (${account.email || ""}).
+Write a concise, professional reply. Match the tone of the original (formal if formal, casual if casual).
+Only output the reply body.`,
+            messages: [{ role: "user", content: `Original from ${msg.from?.name || msg.from?.address}:\nSubject: ${msg.subject}\n\n${content}\n\nDraft a reply.` }],
+          });
+          const draft = draftResp.content[0]?.text || "";
+
+          if (draft) {
+            // Send action email with the draft for phone approval
+            await sendActionEmail(msg, `AI Draft Reply:\n\n${draft}`, [
+              { label: "Send This Reply", command: `reply: ${draft}`, color: "#4ade80" },
+              { label: "Decline", command: "decline", color: "#f06060" },
+              { label: "Later", command: "later", color: "#ff9f43" },
+              { label: "Ignore", command: "ignore", color: "#55555e" },
+            ]);
+
+            if (smsTo) {
+              await sendAlert(`ACTION: ${msg.from?.name || msg.from?.address}: ${msg.subject}\nDraft reply sent to your email for approval`);
+              _addSmsSentUid(msg.uid);
+            }
+          }
+        } catch (e) { console.error("Low Touch draft failed:", e.message); }
+
+      } else if (category === "meeting") {
+        // Auto-create calendar event
+        if (googleAuth?.isConnected) {
+          try { await autoCreateTask(msg, `Meeting: ${msg.subject}`); } catch (e) {}
+        }
+        if (smsTo) {
+          await sendAlert(`MEETING: ${msg.from?.name || msg.from?.address}: ${msg.subject}`);
+          _addSmsSentUid(msg.uid);
+        }
+
+      } else if (category === "deadline") {
+        // SMS alert with deadline
+        const deadline = cat.deadline || "soon";
+        if (smsTo) {
+          await sendAlert(`DEADLINE: ${msg.from?.name || msg.from?.address}: ${msg.subject} [DUE ${deadline}]`);
+          _addSmsSentUid(msg.uid);
+        }
+      }
+
+      // Track as processed
+      processed.add(msg.uid);
+    } catch (e) { console.error("Low Touch failed for UID", msg.uid, e.message); }
+  }
+
+  // Persist processed list (keep last 200)
+  const arr = [...processed];
+  if (arr.length > 200) arr.splice(0, arr.length - 200);
+  store.set(processedKey, arr);
+
+  // Follow-up nudge check (emails sent > N days ago with no reply)
+  const nudgeDays = store.get("low_touch_nudge_days") || 5;
+  try {
+    const nudgeClient = await createFreshImapClient();
+    try {
+      // Find sent folder
+      const tree = await nudgeClient.listTree();
+      let sentPath = null;
+      function findSent(node) { if (node.specialUse === "\\Sent" || /^sent/i.test(node.name)) sentPath = node.path; if (node.folders) node.folders.forEach(findSent); }
+      findSent(tree);
+
+      if (sentPath) {
+        const lock = await nudgeClient.getMailboxLock(sentPath);
+        try {
+          const nudgeCutoff = new Date(Date.now() - nudgeDays * 86400000);
+          const nudgeRecent = new Date(Date.now() - (nudgeDays + 2) * 86400000);
+
+          // Search sent emails from the nudge window
+          const sentUids = await nudgeClient.search({ since: nudgeRecent, before: nudgeCutoff }, { uid: true });
+          if (sentUids.length) {
+            const nudgedKey = "low_touch_nudged";
+            const nudged = new Set(store.get(nudgedKey) || []);
+
+            for await (const sent of nudgeClient.fetch({ uid: sentUids.slice(-10) }, { envelope: true })) {
+              if (nudged.has(sent.uid)) continue;
+              const toAddr = sent.envelope?.to?.[0]?.address;
+              if (!toAddr) continue;
+
+              // Check if they replied (search inbox for from:toAddr since we sent)
+              try {
+                const inboxClient = await createFreshImapClient();
+                try {
+                  const iLock = await inboxClient.getMailboxLock("INBOX");
+                  try {
+                    const replies = await inboxClient.search({ from: toAddr, since: nudgeCutoff }, { uid: true });
+                    if (replies.length === 0) {
+                      // No reply — send nudge alert
+                      if (smsTo && !nudged.has(sent.uid)) {
+                        await sendAlert(`FOLLOW-UP: No reply from ${toAddr} to "${sent.envelope?.subject}" (${nudgeDays} days)`);
+                        nudged.add(sent.uid);
+                      }
+                    }
+                  } finally { iLock.release(); }
+                } finally { try { await inboxClient.logout(); } catch (e) {} }
+              } catch (e) {}
+            }
+
+            const nudgeArr = [...nudged];
+            if (nudgeArr.length > 100) nudgeArr.splice(0, nudgeArr.length - 100);
+            store.set(nudgedKey, nudgeArr);
+          }
+        } finally { lock.release(); }
+      }
+    } finally { try { await nudgeClient.logout(); } catch (e) {} }
+  } catch (e) { console.error("Low Touch nudge check failed:", e.message); }
+}
+
+// IPC handlers for Low Touch
+ipcMain.handle("low-touch-get", () => ({
+  enabled: store.get("low_touch_enabled") === true,
+  nudgeDays: store.get("low_touch_nudge_days") || 5,
+}));
+
+ipcMain.handle("low-touch-set", (_, cfg) => {
+  if (cfg.enabled !== undefined) store.set("low_touch_enabled", cfg.enabled);
+  if (cfg.nudgeDays !== undefined) store.set("low_touch_nudge_days", cfg.nudgeDays);
+  return { ok: true };
+});
+
 async function autoTriageNewMail(messages) {
   // Use persistent tracking — survives app restarts
   const sentUids = _getSmsSentUids();
@@ -1373,6 +1628,7 @@ async function startIdle() {
       const initial = await fetchInbox(0, 50);
       mainWindow?.webContents?.send("inbox-updated", initial);
       await autoTriageNewMail(initial.messages || []);
+      await lowTouchProcess(initial.messages || []);
     } catch (e) {}
 
     // Fast VIP check every 5 minutes — just checks for new VIP/Watch emails
@@ -1400,6 +1656,7 @@ async function startIdle() {
         const result = await fetchInbox(0, 50);
         mainWindow?.webContents?.send("inbox-updated", result);
         await autoTriageNewMail(result.messages || []);
+        await lowTouchProcess(result.messages || []);
       } catch (e) {
         // reconnect on next cycle
       }

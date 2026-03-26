@@ -30,6 +30,13 @@
     <nav id="sidebar">
       <div class="logo">GideonMail</div>
       <button id="btnCompose" class="compose-btn">Compose</button>
+      <div id="lowTouchToggle" style="padding:6px 10px;margin-bottom:8px;background:var(--bg2);border-radius:8px;cursor:pointer;display:flex;align-items:center;gap:8px">
+        <div id="lowTouchDot" style="width:8px;height:8px;border-radius:50%;background:#55555e"></div>
+        <div style="flex:1">
+          <div style="font-size:11px;font-weight:600;color:var(--fg2)" id="lowTouchLabel">Low Touch: OFF</div>
+          <div style="font-size:9px;color:var(--fg2)">Autopilot mode</div>
+        </div>
+      </div>
       <div id="folderList" class="folder-list"></div>
       <div id="updateBanner" style="display:none;padding:6px 10px;background:#1a1a0a;border:1px solid #f59e0b33;border-radius:6px;margin-bottom:6px;cursor:pointer">
         <div style="font-size:10px;color:#f59e0b;font-weight:600" id="updateText"></div>
