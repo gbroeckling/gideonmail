@@ -132,4 +132,7 @@ contextBridge.exposeInMainWorld("gideon", {
   onInboxUpdated: (cb) => {
     ipcRenderer.on("inbox-updated", (_, data) => cb(data));
   },
+  onOpenMeetingTask: (cb) => {
+    ipcRenderer.on("open-meeting-task", (_, data) => cb(data));
+  },
 });

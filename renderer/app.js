@@ -387,6 +387,15 @@ function bindEvents() {
   });
   gideon.onPendingAppointment(() => checkPendingAppointments());
 
+  // When clicking a Windows notification for a meeting, open that email + Task flow
+  gideon.onOpenMeetingTask(async (data) => {
+    if (data.uid) {
+      await openMessage(data.uid);
+      // Small delay to let the message load, then trigger Task
+      setTimeout(() => { $("#btnTask").click(); }, 500);
+    }
+  });
+
   // Google Calendar OAuth
   $("#cfgGcalConnect").addEventListener("click", async () => {
     try {

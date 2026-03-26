@@ -842,16 +842,18 @@ async function autoTriageNewMail(messages) {
                 });
                 console.log(`Watchlist: auto-created calendar event for ${msg.from?.address}: ${event.title}`);
                 // Windows notification for auto-created event
-                const { Notification } = require("electron");
-                if (Notification.isSupported()) {
-                  const n = new Notification({
-                    title: "Calendar Event Added",
-                    body: `${event.title}\n${event.date} ${event.startTime || ""}–${event.endTime || ""}`,
-                    silent: false,
-                  });
-                  n.show();
-                  n.on("click", () => { mainWindow?.show(); mainWindow?.focus(); });
-                }
+                try {
+                  const { Notification: WinNotif2 } = require("electron");
+                  if (WinNotif2.isSupported()) {
+                    const n = new WinNotif2({
+                      title: "Calendar Event Added",
+                      body: `${event.title}\n${event.date} ${event.startTime || ""}–${event.endTime || ""}`,
+                      silent: false,
+                    });
+                    n.show();
+                    n.on("click", () => { mainWindow?.show(); mainWindow?.focus(); });
+                  }
+                } catch (notifErr) { console.error("Calendar notification failed:", notifErr.message); }
               }
             } catch (e) { console.error("Watchlist auto-calendar failed:", e.message); }
           }
@@ -931,16 +933,27 @@ async function autoTriageNewMail(messages) {
             mainWindow?.webContents?.send("pending-appointment", { uid: m.uid, subject: m.subject, from: m.from });
 
             // Windows notification for pending meeting
-            const { Notification: Notif } = require("electron");
-            if (Notif.isSupported()) {
-              const n = new Notif({
-                title: "Meeting Waiting for Calendar",
-                body: `${m.from?.name || m.from?.address}: ${m.subject}\nClick to review and add to calendar`,
-                silent: false,
-              });
-              n.show();
-              n.on("click", () => { mainWindow?.show(); mainWindow?.focus(); });
-            }
+            try {
+              const { Notification: WinNotif } = require("electron");
+              if (WinNotif.isSupported()) {
+                const meetingUid = m.uid;
+                const n = new WinNotif({
+                  title: "Meeting Waiting for Calendar",
+                  body: `${m.from?.name || m.from?.address}: ${m.subject}\nClick to review and add to calendar`,
+                  silent: false,
+                  urgency: "normal",
+                });
+                n.show();
+                n.on("click", () => {
+                  if (mainWindow) {
+                    mainWindow.show();
+                    mainWindow.focus();
+                    // Tell renderer to open this specific meeting in the Task flow
+                    mainWindow.webContents.send("open-meeting-task", { uid: meetingUid, subject: m.subject, from: m.from });
+                  }
+                });
+              }
+            } catch (notifErr) { console.error("Meeting notification failed:", notifErr.message); }
           }
 
           try { await sendSMS(smsText); _addSmsSentUid(m.uid); } catch (e) { console.error("VIP SMS failed:", e.message); }
