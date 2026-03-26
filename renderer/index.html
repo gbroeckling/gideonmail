@@ -175,7 +175,12 @@
       <!-- People (unified sender management) -->
       <div id="rulesPeople" class="rules-section">
         <div style="padding:10px 16px;font-size:12px;color:var(--fg2)">Manage how you interact with specific senders. One list, one place.</div>
-        <div style="padding:4px 16px"><label style="font-size:11px;color:#f59e0b;cursor:pointer"><input type="checkbox" id="cfgVipMeetings" checked /> Detect meetings from VIP senders (SMS says "MEETING" + queues for calendar)</label></div>
+        <div style="padding:6px 16px;background:var(--bg2);border-radius:6px;margin:4px 16px">
+          <div style="font-size:10px;color:var(--accent);font-weight:600;margin-bottom:4px">VIP Sender Options</div>
+          <label style="display:block;padding:2px 0;font-size:11px;color:var(--fg);cursor:pointer"><input type="checkbox" id="cfgVipMeetings" checked /> Detect meetings (SMS says "MEETING" + queues for calendar)</label>
+          <label style="display:block;padding:2px 0;font-size:11px;color:var(--fg);cursor:pointer"><input type="checkbox" id="cfgVipAutoCalendar" /> Auto-add meetings to calendar (no prompt)</label>
+          <label style="display:block;padding:2px 0;font-size:11px;color:var(--fg);cursor:pointer"><input type="checkbox" id="cfgVipAiReview" /> AI review (summary included in SMS)</label>
+        </div>
         <div id="peopleEntries" style="padding:4px 16px;max-height:350px;overflow-y:auto"></div>
         <div style="padding:8px 16px;display:flex;gap:6px;align-items:center">
           <input type="text" id="peopleAddAddr" placeholder="Email or name" style="flex:1;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />

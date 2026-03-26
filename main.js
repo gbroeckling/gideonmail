@@ -922,7 +922,34 @@ async function autoTriageNewMail(messages) {
             } catch (e) { /* skip detection */ }
           }
 
-          if (isMeeting) {
+          // VIP auto-calendar: create event immediately, no prompt
+          const vipAutoCalendar = store.get("vip_auto_calendar") === true;
+          const vipAiReview = store.get("vip_ai_review") === true;
+
+          // AI review for VIP emails
+          if (vipAiReview && store.get("anthropic_api_key")) {
+            try {
+              const fullMsg = await fetchMessage(m.uid);
+              const analysis = await aiAnalyzeEmail(fullMsg);
+              smsText += `\nAI: ${analysis.substring(0, 80)}`;
+            } catch (e) {}
+          }
+
+          if (isMeeting && vipAutoCalendar && googleAuth?.isConnected) {
+            // Auto-create calendar event immediately
+            try {
+              await autoCreateTask(m, `Meeting: ${m.subject}`);
+              smsText = `MEETING AUTO-ADDED: ${m.from?.name || m.from?.address}: ${m.subject}`;
+              try {
+                const { Notification: WinNotifAuto } = require("electron");
+                if (WinNotifAuto.isSupported()) {
+                  const n = new WinNotifAuto({ title: "Meeting Auto-Added to Calendar", body: `${m.from?.name || m.from?.address}: ${m.subject}`, silent: false });
+                  n.show();
+                  n.on("click", () => { mainWindow?.show(); mainWindow?.focus(); });
+                }
+              } catch (e) {}
+            } catch (e) { console.error("VIP auto-calendar failed:", e.message); }
+          } else if (isMeeting) {
             smsText = `MEETING from ${m.from?.name || m.from?.address}: ${m.subject}`;
             // Queue as pending appointment
             const pending = store.get("pending_appointments") || [];
@@ -2578,6 +2605,21 @@ ipcMain.handle("vip-meetings-get", () => {
 
 ipcMain.handle("vip-meetings-set", (_, enabled) => {
   store.set("vip_detect_meetings", enabled);
+  return { ok: true };
+});
+
+ipcMain.handle("vip-options-get", () => {
+  return {
+    detectMeetings: store.get("vip_detect_meetings") !== false,
+    autoCalendar: store.get("vip_auto_calendar") === true,
+    aiReview: store.get("vip_ai_review") === true,
+  };
+});
+
+ipcMain.handle("vip-options-save", (_, opts) => {
+  if (opts.detectMeetings !== undefined) store.set("vip_detect_meetings", opts.detectMeetings);
+  if (opts.autoCalendar !== undefined) store.set("vip_auto_calendar", opts.autoCalendar);
+  if (opts.aiReview !== undefined) store.set("vip_ai_review", opts.aiReview);
   return { ok: true };
 });
 

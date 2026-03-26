@@ -320,10 +320,17 @@ function bindEvents() {
     });
   }
 
-  // VIP meeting detection toggle
-  $("#cfgVipMeetings").addEventListener("change", async (e) => {
-    await gideon.vipMeetingsSet(e.target.checked);
-  });
+  // VIP options
+  const saveVipOpts = async () => {
+    await gideon.vipOptionsSave({
+      detectMeetings: $("#cfgVipMeetings").checked,
+      autoCalendar: $("#cfgVipAutoCalendar").checked,
+      aiReview: $("#cfgVipAiReview").checked,
+    });
+  };
+  $("#cfgVipMeetings").addEventListener("change", saveVipOpts);
+  $("#cfgVipAutoCalendar").addEventListener("change", saveVipOpts);
+  $("#cfgVipAiReview").addEventListener("change", saveVipOpts);
 
   // People add
   $("#peopleAddBtn").addEventListener("click", async () => {
@@ -1258,8 +1265,10 @@ async function openRules() {
   const ac = await gideon.autocheckGet();
   $("#sfAutoCheckInterval").value = String(ac.intervalMin || 120);
 
-  const vipMtg = await gideon.vipMeetingsGet();
-  $("#cfgVipMeetings").checked = vipMtg.enabled;
+  const vipOpts = await gideon.vipOptionsGet();
+  $("#cfgVipMeetings").checked = vipOpts.detectMeetings;
+  $("#cfgVipAutoCalendar").checked = vipOpts.autoCalendar;
+  $("#cfgVipAiReview").checked = vipOpts.aiReview;
   $("#rulesModal").style.display = "flex";
   renderPeople();
   renderSettingsInstructions();

@@ -109,6 +109,8 @@ contextBridge.exposeInMainWorld("gideon", {
   pendingAppointmentsClear: (uid) => ipcRenderer.invoke("pending-appointments-clear", uid),
   vipMeetingsGet: () => ipcRenderer.invoke("vip-meetings-get"),
   vipMeetingsSet: (on) => ipcRenderer.invoke("vip-meetings-set", on),
+  vipOptionsGet: () => ipcRenderer.invoke("vip-options-get"),
+  vipOptionsSave: (opts) => ipcRenderer.invoke("vip-options-save", opts),
   onPendingAppointment: (cb) => { ipcRenderer.on("pending-appointment", (_, data) => cb(data)); },
 
   // Calendar
