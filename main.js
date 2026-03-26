@@ -891,9 +891,14 @@ async function autoTriageNewMail(messages) {
                       title: "Calendar Event Added",
                       body: `${event.title}\n${event.date} ${event.startTime || ""}–${event.endTime || ""}`,
                       silent: false,
+                      icon: path.join(__dirname, "assets", "icon.png"),
                     });
                     n.show();
-                    n.on("click", () => { mainWindow?.show(); mainWindow?.focus(); });
+                    n.on("click", () => {
+                      if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+                      mainWindow.show();
+                      mainWindow.focus();
+                    });
                   }
                 } catch (notifErr) { console.error("Calendar notification failed:", notifErr.message); }
               }
@@ -1010,16 +1015,14 @@ async function autoTriageNewMail(messages) {
                   title: "Meeting Waiting for Calendar",
                   body: `${m.from?.name || m.from?.address}: ${m.subject}\nClick to review and add to calendar`,
                   silent: false,
-                  urgency: "normal",
+                  icon: path.join(__dirname, "assets", "icon.png"),
                 });
                 n.show();
                 n.on("click", () => {
-                  if (mainWindow) {
-                    mainWindow.show();
-                    mainWindow.focus();
-                    // Tell renderer to open this specific meeting in the Task flow
-                    mainWindow.webContents.send("open-meeting-task", { uid: meetingUid, subject: m.subject, from: m.from });
-                  }
+                  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+                  mainWindow.show();
+                  mainWindow.focus();
+                  mainWindow.webContents.send("open-meeting-task", { uid: meetingUid, subject: m.subject, from: m.from });
                 });
               }
             } catch (notifErr) { console.error("Meeting notification failed:", notifErr.message); }
