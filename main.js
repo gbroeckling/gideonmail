@@ -835,9 +835,10 @@ async function checkActiveConversations(newMsgs) {
   const minReplies = store.get("convo_min_replies") || 2;
   const lookbackMonths = store.get("convo_lookback_months") || 6;
 
-  const client = await getImapClient();
+  const client = await createFreshImapClient();
   const alerts = [];
 
+  try {
   // Find the Sent folder
   const tree = await client.listTree();
   let sentPath = null;
@@ -854,17 +855,25 @@ async function checkActiveConversations(newMsgs) {
   const lock = await client.getMailboxLock(sentPath);
   try {
     for (const msg of newMsgs) {
-      // Normalize the subject for thread matching (strip Re:/Fwd: prefixes)
+      const senderAddr = (msg.from?.address || "").toLowerCase();
+      if (!senderAddr) continue;
+
+      // Skip if sender is on blocked or greylist (spam shouldn't trigger conversations)
+      const senderStatus = _senderListStatus(msg.from?.address, msg.from?.name);
+      if (senderStatus === "blacklist" || senderStatus === "greylist") continue;
+
+      // Normalize subject
       const baseSubject = (msg.subject || "")
         .replace(/^(re|fwd|fw)\s*:\s*/gi, "")
-        .replace(/^(re|fwd|fw)\s*:\s*/gi, "") // double strip
+        .replace(/^(re|fwd|fw)\s*:\s*/gi, "")
         .trim();
 
-      if (!baseSubject || baseSubject.length < 3) continue;
+      if (!baseSubject || baseSubject.length < 5) continue; // too short = too many false matches
 
-      // Search Sent folder for our replies in this thread (last 6 months)
+      // Search Sent folder for replies TO THIS SPECIFIC SENDER (not just subject match)
       try {
         const sentUids = await client.search({
+          to: senderAddr,
           subject: baseSubject,
           since: lookbackDate,
         }, { uid: true });
@@ -878,11 +887,30 @@ async function checkActiveConversations(newMsgs) {
           });
         }
       } catch (e) {
-        // Search failed for this message, skip
+        // If combined search fails, try just TO address (some servers don't support both)
+        try {
+          const sentUids2 = await client.search({
+            to: senderAddr,
+            since: lookbackDate,
+          }, { uid: true });
+
+          // Only alert if we've sent multiple emails to this person
+          if (sentUids2.length >= minReplies) {
+            alerts.push({
+              uid: msg.uid,
+              subject: msg.subject,
+              from: msg.from?.name || msg.from?.address || "Unknown",
+              replyCount: sentUids2.length,
+            });
+          }
+        } catch (e2) {}
       }
     }
   } finally {
     lock.release();
+  }
+  } finally {
+    try { await client.logout(); } catch (e) {}
   }
 
   return alerts;
@@ -937,6 +965,26 @@ async function autoTriageNewMail(messages) {
   // Run blacklist cleanup (delete emails > 1 week old from blacklisted senders)
   cleanupBlacklistedEmails().catch((e) => console.error("Blacklist cleanup:", e.message));
   processActionReplies().catch((e) => console.error("Action replies:", e.message));
+
+  // ── Basic spam heuristic (always runs, no API needed) ──────────────────
+  // Remove obvious spam from smsEligible before any processing
+  const spamPatterns = [
+    /\b(bitcoin|btc|crypto|wallet|ransom)\b/i,
+    /\b(recorded you|i recorded|webcam|pervert)\b/i,
+    /\b(lottery|winner|million dollars|inheritance)\b/i,
+    /\b(viagra|cialis|pharmacy|pills)\b/i,
+    /\b(nigerian|prince|beneficiary|unclaimed)\b/i,
+    /\b(click here|act now|limited time|urgent action)\b.*\b(account|verify|password)\b/i,
+  ];
+  for (let i = smsEligible.length - 1; i >= 0; i--) {
+    const m = smsEligible[i];
+    if (_isSpamImmune(m.from?.address, m.from?.name)) continue;
+    const text = `${m.subject || ""} ${m.from?.name || ""}`;
+    if (spamPatterns.some((p) => p.test(text))) {
+      console.log(`Spam heuristic: removed "${m.subject}" from ${m.from?.address}`);
+      smsEligible.splice(i, 1);
+    }
+  }
 
   // ── Run spam filters on unknown senders BEFORE AI gets a look ─────────
   // Trusted senders (VIP, Watch, Muted) skip this. Only unknown + blocked.
