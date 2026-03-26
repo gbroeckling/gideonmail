@@ -741,6 +741,43 @@ async function autoTriageNewMail(messages) {
   // Run blacklist cleanup (delete emails > 1 week old from blacklisted senders)
   cleanupBlacklistedEmails().catch((e) => console.error("Blacklist cleanup:", e.message));
 
+  // ── Run spam filters on unknown senders BEFORE AI gets a look ─────────
+  // Trusted senders (VIP, Watch, Muted) skip this. Only unknown + blocked.
+  const filters = store.get("security_filters") || {};
+  if (filters.spamassassin) {
+    const unknownMsgs = smsEligible.filter((m) => !_isSpamImmune(m.from?.address, m.from?.name));
+    if (unknownMsgs.length > 0) {
+      try {
+        const spamClient = await createFreshImapClient();
+        try {
+          const lock = await spamClient.getMailboxLock("INBOX");
+          try {
+            const spamUids = [];
+            // Fetch headers for unknown sender emails to check SpamAssassin score
+            for await (const msg of spamClient.fetch({ uid: unknownMsgs.map((m) => m.uid) }, { headers: true })) {
+              const hdrs = msg.headers?.toString() || "";
+              const scoreMatch = hdrs.match(/X-Spam-Status:.*?score=([0-9.-]+)/i) || hdrs.match(/X-Spam-Score:\s*([0-9.-]+)/i);
+              if (scoreMatch) {
+                const score = parseFloat(scoreMatch[1]);
+                if (score >= 5) {
+                  spamUids.push(msg.uid);
+                }
+              }
+            }
+
+            if (spamUids.length > 0) {
+              console.log(`SpamAssassin: flagged ${spamUids.length} emails (score >= 5)`);
+              const spamSet = new Set(spamUids);
+              for (let i = smsEligible.length - 1; i >= 0; i--) {
+                if (spamSet.has(smsEligible[i].uid)) smsEligible.splice(i, 1);
+              }
+            }
+          } finally { lock.release(); }
+        } finally { try { await spamClient.logout(); } catch (e) {} }
+      } catch (e) { console.error("SpamAssassin pre-filter failed:", e.message); }
+    }
+  }
+
   // ── AI Watch List (smart senders: AI analyze + actions) ────────────────
   const watchlist = (store.get("ai_watchlist") || []).filter((w) => w.enabled);
   if (watchlist.length > 0 && store.get("anthropic_api_key")) {
