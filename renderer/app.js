@@ -42,6 +42,7 @@ async function init() {
 function bindEvents() {
   $("#btnCompose").addEventListener("click", () => openCompose("new"));
   $("#btnSettings").addEventListener("click", openSettings);
+  $("#btnRefresh").addEventListener("click", () => { loadFolders(); loadMessages(); });
   $("#btnCheckAll").addEventListener("click", async () => {
     $("#btnCheckAll").textContent = "...";
     $("#btnCheckAll").disabled = true;
