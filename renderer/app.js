@@ -1267,6 +1267,10 @@ async function openRules() {
   const ac = await gideon.autocheckGet();
   $("#sfAutoCheckInterval").value = String(ac.intervalMin || 120);
 
+  // Scheduling hours
+  $("#sfSchedStart").value = localStorage.getItem("gm_sched_start") || "8";
+  $("#sfSchedEnd").value = localStorage.getItem("gm_sched_end") || "18";
+
   const vipOpts = await gideon.vipOptionsGet();
   $("#cfgVipMeetings").checked = vipOpts.detectMeetings;
   $("#cfgVipAutoCalendar").checked = vipOpts.autoCalendar;
@@ -1307,6 +1311,9 @@ async function saveRulesSettings() {
   await gideon.autocheckSave({
     intervalMin: parseInt($("#sfAutoCheckInterval").value) || 120,
   });
+  // Save scheduling hours
+  localStorage.setItem("gm_sched_start", $("#sfSchedStart").value);
+  localStorage.setItem("gm_sched_end", $("#sfSchedEnd").value);
   await gideon.aiUrgencySet($("#sfAiUrgency").checked);
   await gideon.securityApiKeysSave({
     virustotal: $("#sfKeyVt").value.trim(),
@@ -1733,11 +1740,25 @@ function showTimePicker(event, existingEvents) {
     let selDate = event.date || new Date().toISOString().split("T")[0];
     let selStart = event.startTime || "09:00";
     let selDuration = 30; // minutes
+
     // Calculate duration from event if endTime exists
     if (event.endTime && event.startTime) {
       const [sh, sm] = event.startTime.split(":").map(Number);
       const [eh, em] = event.endTime.split(":").map(Number);
       selDuration = Math.max(15, (eh * 60 + em) - (sh * 60 + sm));
+    }
+
+    // Never default to a past time — push to next available hour
+    const now = new Date();
+    const todayStr = now.toISOString().split("T")[0];
+    if (selDate === todayStr) {
+      const [curH, curM] = [now.getHours(), now.getMinutes()];
+      const [selH, selM] = selStart.split(":").map(Number);
+      if (selH * 60 + selM < curH * 60 + curM) {
+        // Round up to next 15-min slot
+        const nextMin = Math.ceil((curH * 60 + curM) / 15) * 15;
+        selStart = `${String(Math.floor(nextMin / 60)).padStart(2, "0")}:${String(nextMin % 60).padStart(2, "0")}`;
+      }
     }
     let dayEvents = existingEvents || [];
 
@@ -1818,22 +1839,24 @@ function showTimePicker(event, existingEvents) {
       dayLabel.textContent = dayDate.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric", year: "numeric" });
       picker.appendChild(dayLabel);
 
-      // Visual timeline (8am-8pm)
+      // Visual timeline — use scheduling hours from settings or default 8am-6pm
+      const schedStartH = parseInt(localStorage.getItem("gm_sched_start") || "8");
+      const schedEndH = parseInt(localStorage.getItem("gm_sched_end") || "18");
       const timeline = document.createElement("div");
-      timeline.style.cssText = "position:relative;background:var(--bg2);border-radius:6px;padding:4px;margin-bottom:8px;min-height:180px";
+      timeline.style.cssText = "position:relative;background:var(--bg2);border-radius:6px;padding:12px 4px;margin-bottom:8px;min-height:280px";
 
       const hours = [];
-      for (let h = 8; h <= 20; h++) hours.push(h);
-      const totalMin = (20 - 8) * 60;
+      for (let h = schedStartH; h <= schedEndH; h++) hours.push(h);
+      const totalMin = (schedEndH - schedStartH) * 60;
 
       // Hour labels and grid lines
       for (const h of hours) {
-        const pct = ((h - 8) * 60 / totalMin * 100);
+        const pct = ((h - schedStartH) * 60 / totalMin * 100);
         const line = document.createElement("div");
-        line.style.cssText = `position:absolute;left:40px;right:4px;top:${pct}%;height:1px;background:var(--border)`;
+        line.style.cssText = `position:absolute;left:44px;right:4px;top:calc(12px + ${pct}% * 0.92);height:1px;background:var(--border)`;
         timeline.appendChild(line);
         const label = document.createElement("div");
-        label.style.cssText = `position:absolute;left:2px;top:${pct}%;font-size:9px;color:var(--fg2);transform:translateY(-50%)`;
+        label.style.cssText = `position:absolute;left:2px;top:calc(12px + ${pct}% * 0.92);font-size:9px;color:var(--fg2);transform:translateY(-50%);width:38px;text-align:right`;
         label.textContent = `${h > 12 ? h - 12 : h}${h >= 12 ? "pm" : "am"}`;
         timeline.appendChild(label);
       }
@@ -1844,8 +1867,8 @@ function showTimePicker(event, existingEvents) {
         const es = ev.start ? new Date(ev.start) : null;
         const ee = ev.end ? new Date(ev.end) : null;
         if (!es || !ee) continue;
-        const startMin = es.getHours() * 60 + es.getMinutes() - 8 * 60;
-        const endMin = ee.getHours() * 60 + ee.getMinutes() - 8 * 60;
+        const startMin = es.getHours() * 60 + es.getMinutes() - schedStartH * 60;
+        const endMin = ee.getHours() * 60 + ee.getMinutes() - schedStartH * 60;
         if (startMin < 0 && endMin < 0) continue;
 
         // Check if this event conflicts with proposed
@@ -1854,22 +1877,22 @@ function showTimePicker(event, existingEvents) {
         const isConflict = selStart < eeHM && endTime > esHM;
         if (isConflict) conflictingEvents.push(ev);
 
-        const top = Math.max(0, startMin / totalMin * 100);
-        const height = Math.max(1, (Math.min(endMin, totalMin) - Math.max(startMin, 0)) / totalMin * 100);
+        const top = Math.max(0, startMin / totalMin * 92);
+        const height = Math.max(2, (Math.min(endMin, totalMin) - Math.max(startMin, 0)) / totalMin * 92);
         const block = document.createElement("div");
-        block.style.cssText = `position:absolute;left:42px;right:6px;top:${top}%;height:${height}%;background:${isConflict ? "#2a1a1a" : "#2a2a32"};border-radius:3px;padding:1px 4px;overflow:hidden;border-left:2px solid ${isConflict ? "#ef4444" : "#64748b"};z-index:1`;
+        block.style.cssText = `position:absolute;left:46px;right:6px;top:calc(12px + ${top}%);height:${height}%;background:${isConflict ? "#2a1a1a" : "#2a2a32"};border-radius:3px;padding:2px 4px;overflow:hidden;border-left:2px solid ${isConflict ? "#ef4444" : "#64748b"};z-index:1`;
         block.innerHTML = `<div style="font-size:9px;color:${isConflict ? "#fca5a5" : "var(--fg2)"};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(ev.title)}${isConflict ? " ⚠" : ""}</div>`;
         timeline.appendChild(block);
       }
 
       // Proposed event block (green, clickable to indicate selected)
       const [sh, sm] = selStart.split(":").map(Number);
-      const propStartMin = sh * 60 + sm - 8 * 60;
-      const propTop = Math.max(0, propStartMin / totalMin * 100);
-      const propHeight = Math.max(2, selDuration / totalMin * 100);
+      const propStartMin = sh * 60 + sm - schedStartH * 60;
+      const propTop = Math.max(0, propStartMin / totalMin * 92);
+      const propHeight = Math.max(3, selDuration / totalMin * 92);
       const propBlock = document.createElement("div");
-      propBlock.style.cssText = `position:absolute;left:42px;right:6px;top:${propTop}%;height:${propHeight}%;background:${conflict ? "#7f1d1d" : "#1a3a0a"};border:2px solid ${conflict ? "#ef4444" : "#4ade80"};border-radius:3px;padding:1px 4px;cursor:ns-resize;z-index:2`;
-      propBlock.innerHTML = `<div style="font-size:9px;color:${conflict ? "#fca5a5" : "#86efac"};font-weight:600">${selStart}–${endTime} ${event.title || "New event"}${conflict ? " CONFLICT" : ""}</div>`;
+      propBlock.style.cssText = `position:absolute;left:46px;right:6px;top:calc(12px + ${propTop}%);height:${propHeight}%;background:${conflict ? "#7f1d1d" : "#1a3a0a"};border:2px solid ${conflict ? "#ef4444" : "#4ade80"};border-radius:3px;padding:2px 6px;cursor:pointer;z-index:2`;
+      propBlock.innerHTML = `<div style="font-size:9px;color:${conflict ? "#fca5a5" : "#86efac"};font-weight:600">${selStart}–${endTime} ${event.title || "New event"}${conflict ? " ⚠ CONFLICT" : ""}</div>`;
       timeline.appendChild(propBlock);
 
       // Click on timeline to move event
@@ -1877,7 +1900,7 @@ function showTimePicker(event, existingEvents) {
         const rect = timeline.getBoundingClientRect();
         const y = e.clientY - rect.top;
         const pct2 = y / rect.height;
-        const clickMin = Math.round(pct2 * totalMin / 15) * 15 + 8 * 60;
+        const clickMin = Math.round(pct2 * totalMin / 15) * 15 + schedStartH * 60;
         selStart = `${String(Math.floor(clickMin / 60)).padStart(2, "0")}:${String(clickMin % 60).padStart(2, "0")}`;
         render();
       });

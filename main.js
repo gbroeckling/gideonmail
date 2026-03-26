@@ -2835,7 +2835,9 @@ async function autoCreateTask(msg, eventTitle) {
     let slotStart = null;
     for (let day = 0; day < 3; day++) {
       const d = new Date(Date.now() + day * 86400000);
-      for (let h = 9; h < 17; h++) {
+      const schedStart = store.get("sched_start_hour") || 9;
+      const schedEnd = store.get("sched_end_hour") || 17;
+      for (let h = schedStart; h < schedEnd; h++) {
         const candidate = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, 0, 0);
         if (candidate < new Date()) continue;
         const candidateEnd = new Date(candidate.getTime() + 30 * 60000);
