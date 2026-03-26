@@ -2,6 +2,18 @@ const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell } = require(
 app.setName("GideonMail");
 if (process.platform === "win32") app.setAppUserModelId("GideonMail");
 
+// Prevent crash on IMAP connection resets
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception:", err.message);
+  if (err.code === "ECONNRESET" || err.code === "EPIPE" || err.code === "ETIMEDOUT") {
+    console.log("Network error — will reconnect on next operation");
+    imapClient = null;
+  }
+});
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled rejection:", err?.message || err);
+});
+
 // Single instance lock — prevent multiple tray icons
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -168,6 +180,12 @@ async function getImapClient() {
   const cfg = store.get("account");
   if (!cfg) throw new Error("No account configured");
 
+  // Force reconnect if connection is dead
+  if (imapClient && !imapClient.usable) {
+    try { await imapClient.logout(); } catch (e) {}
+    imapClient = null;
+  }
+
   if (imapClient && imapClient.usable) return imapClient;
 
   imapClient = new ImapFlow({
@@ -177,6 +195,16 @@ async function getImapClient() {
     auth: { user: cfg.username, pass: cfg.password },
     logger: false,
     tls: { rejectUnauthorized: false },
+  });
+
+  // Handle unexpected disconnects
+  imapClient.on("error", (err) => {
+    console.error("IMAP connection error:", err.message);
+    imapClient = null;
+  });
+  imapClient.on("close", () => {
+    console.log("IMAP connection closed, will reconnect on next use");
+    imapClient = null;
   });
 
   await imapClient.connect();
