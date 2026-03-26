@@ -42,7 +42,17 @@ async function init() {
 function bindEvents() {
   $("#btnCompose").addEventListener("click", () => openCompose("new"));
   $("#btnSettings").addEventListener("click", openSettings);
-  $("#btnRefresh").addEventListener("click", () => loadMessages());
+  $("#btnCheckAll").addEventListener("click", async () => {
+    $("#btnCheckAll").textContent = "...";
+    $("#btnCheckAll").disabled = true;
+    try {
+      await loadFolders();
+      await loadMessages();
+      await gideon.checkNow();
+    } catch (e) {}
+    $("#btnCheckAll").textContent = "✓";
+    $("#btnCheckAll").disabled = false;
+  });
   $("#btnPrev").addEventListener("click", () => { if (currentPage > 0) { currentPage--; loadMessages(); } });
   $("#btnNext").addEventListener("click", () => { currentPage++; loadMessages(); });
 
