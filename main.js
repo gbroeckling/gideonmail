@@ -955,17 +955,28 @@ async function autoTriageNewMail(messages) {
             if (deadline) smsText += ` [DUE ${deadline}]`;
           }
 
-          // Meeting detection for VIP emails
+          // Meeting detection + location extraction for VIP emails (one AI call)
+          let meetingLocation = "";
           if (detectMeetings && store.get("anthropic_api_key")) {
             try {
               const client = getAnthropicClient();
               const resp = await client.messages.create({
                 model: "claude-haiku-4-5-20251001",
-                max_tokens: 50,
-                system: "Respond with ONLY 'MEETING' or 'NOT_MEETING'. A meeting is any email about a scheduled event, appointment, call, interview, or gathering with a specific date/time.",
+                max_tokens: 100,
+                system: `Analyze this email. Respond with ONLY valid JSON:
+{"meeting": true/false, "location": "full address or venue name or empty string"}
+A meeting is any scheduled event, appointment, call, interview, or gathering with a specific date/time.
+For location: extract the full street address if available. If only a venue name, include it. If no location mentioned, use empty string.`,
                 messages: [{ role: "user", content: `From: ${m.from?.name || m.from?.address}\nSubject: ${m.subject}` }],
               });
-              isMeeting = (resp.content[0]?.text || "").trim().toUpperCase().startsWith("MEETING");
+              const meetingText = (resp.content[0]?.text || "").trim();
+              try {
+                const parsed = JSON.parse(meetingText.match(/\{[\s\S]*\}/)?.[0] || "{}");
+                isMeeting = !!parsed.meeting;
+                meetingLocation = parsed.location || "";
+              } catch (e) {
+                isMeeting = meetingText.toUpperCase().includes("TRUE");
+              }
             } catch (e) { /* skip detection */ }
           }
 
@@ -987,6 +998,7 @@ async function autoTriageNewMail(messages) {
             try {
               await autoCreateTask(m, `Meeting: ${m.subject}`);
               smsText = `MEETING AUTO-ADDED: ${m.from?.name || m.from?.address}: ${m.subject}`;
+              if (meetingLocation) smsText += `\n📍 ${meetingLocation}`;
               try {
                 const { Notification: WinNotifAuto } = require("electron");
                 if (WinNotifAuto.isSupported()) {
@@ -998,6 +1010,7 @@ async function autoTriageNewMail(messages) {
             } catch (e) { console.error("VIP auto-calendar failed:", e.message); }
           } else if (isMeeting) {
             smsText = `MEETING from ${m.from?.name || m.from?.address}: ${m.subject}`;
+            if (meetingLocation) smsText += `\n📍 ${meetingLocation}`;
             // Queue as pending appointment
             const pending = store.get("pending_appointments") || [];
             pending.push({ uid: m.uid, subject: m.subject, from: m.from, date: m.date, created: new Date().toISOString() });
@@ -2508,16 +2521,19 @@ ipcMain.handle("gcal-create-event", async (_, event) => {
       end: { dateTime: endDateTime, timeZone: timezone },
     };
     // Only include attendees if explicitly approved (event.attendeesApproved === true)
-    if (event.attendeesApproved && event.attendees?.length) {
+    const hasApprovedAttendees = event.attendeesApproved && event.attendees?.length;
+    if (hasApprovedAttendees) {
       eventBody.attendees = event.attendees.filter(Boolean).map((e) => ({ email: e }));
     }
     const body = JSON.stringify(eventBody);
 
+    // Send invite emails only when attendees are approved
+    const sendUpdates = hasApprovedAttendees ? "all" : "none";
     const https = require("https");
     const res = await new Promise((resolve, reject) => {
       const req = https.request({
         hostname: "www.googleapis.com",
-        path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?sendUpdates=none`,
+        path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?sendUpdates=${sendUpdates}`,
         method: "POST",
         headers: {
           "Authorization": `Bearer ${token}`,
