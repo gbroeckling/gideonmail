@@ -2720,7 +2720,7 @@ ipcMain.handle("instructions-update", (_, id, text) => {
 
 // ── App lifecycle ───────────────────────────────────────────────────────────
 // ── Morning Briefing ────────────────────────────────────────────────────
-let briefingSentToday = null;
+// Persisted — survives restarts
 
 async function sendMorningBriefing() {
   const smsTo = store.get("sms_to");
@@ -2728,7 +2728,7 @@ async function sendMorningBriefing() {
   if (!smsTo || !apiKey) return;
 
   const today = new Date().toDateString();
-  if (briefingSentToday === today) return;
+  if (store.get("briefing_sent_date") === today) return;
 
   const hour = new Date().getHours();
   const briefingHour = store.get("briefing_hour") || 7;
@@ -2780,7 +2780,7 @@ async function sendMorningBriefing() {
 
     const briefing = `Morning: ${unread} unread${vipCount ? `, ${vipCount} VIP` : ""}${pending ? `, ${pending} meetings pending` : ""}${calendarInfo ? `. ${calendarInfo}` : ""}`;
     await sendAlert(briefing);
-    briefingSentToday = today;
+    store.set("briefing_sent_date", today);
     console.log("Morning briefing sent");
   } catch (e) { console.error("Morning briefing failed:", e.message); }
 }
