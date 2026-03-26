@@ -2387,19 +2387,53 @@ ipcMain.handle("ai-extract-event", async (_, email) => {
   "date": "YYYY-MM-DD",
   "startTime": "HH:MM" (24h format),
   "endTime": "HH:MM" (24h format, estimate 1h if not specified),
-  "location": "address or venue or empty string",
+  "location": "full street address if mentioned, or venue name, or empty string",
   "description": "brief summary of what this is about",
   "attendees": ["email@example.com"] (extract any email addresses mentioned)
 }
+For location: always include the FULL address with street, city, province/state, postal code if available in the email. If only a venue name is given (e.g. "Starbucks on Main"), include it as-is.
 If dates/times are relative (e.g. "next Tuesday", "tomorrow at 3pm"), convert to absolute. If no time specified, default to 09:00-10:00. If no date found, use tomorrow.`,
       messages: [{ role: "user", content: `From: ${email.from?.name || ""} <${email.from?.address || ""}>\nSubject: ${email.subject}\nDate: ${email.date}\n\n${content}` }],
     });
 
     const text = response.content[0]?.text || "";
-    // Extract JSON from response
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return { error: "Could not extract event details" };
     const event = JSON.parse(jsonMatch[0]);
+
+    // Add Google Maps link if location is present and specific
+    if (event.location && event.location.length > 3) {
+      const mapsQuery = encodeURIComponent(event.location);
+      event.mapsLink = `https://www.google.com/maps/search/?api=1&query=${mapsQuery}`;
+
+      // Try to get a definitive address via Google Geocoding (if key available)
+      const safeBrowsingKey = store.get("api_safebrowsing"); // reuse Google API key
+      if (safeBrowsingKey) {
+        try {
+          const https = require("https");
+          const geoRes = await new Promise((resolve, reject) => {
+            const req = https.request({
+              hostname: "maps.googleapis.com",
+              path: `/maps/api/geocode/json?address=${mapsQuery}&key=${safeBrowsingKey}`,
+            }, (res) => {
+              let d = ""; res.on("data", (c) => { d += c; });
+              res.on("end", () => { try { resolve(JSON.parse(d)); } catch (e) { resolve({}); } });
+            });
+            req.on("error", reject);
+            req.end();
+          });
+
+          if (geoRes.status === "OK" && geoRes.results?.length) {
+            const best = geoRes.results[0];
+            if (best.formatted_address) {
+              event.fullAddress = best.formatted_address;
+              event.mapsLink = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(best.formatted_address)}`;
+            }
+          }
+        } catch (e) { /* geocoding failed, use original location */ }
+      }
+    }
+
     return { ok: true, event };
   } catch (e) {
     return { error: e.message };
@@ -2461,10 +2495,15 @@ ipcMain.handle("gcal-create-event", async (_, event) => {
     const endDateTime = `${event.date}T${event.endTime || "10:00"}:00`;
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+    // Use full address if available, include Maps link in description
+    const eventLocation = event.fullAddress || event.location || "";
+    let eventDesc = event.description || "";
+    if (event.mapsLink) eventDesc += `\n\nGoogle Maps: ${event.mapsLink}`;
+
     const eventBody = {
       summary: event.title,
-      description: event.description || "",
-      location: event.location || "",
+      description: eventDesc,
+      location: eventLocation,
       start: { dateTime: startDateTime, timeZone: timezone },
       end: { dateTime: endDateTime, timeZone: timezone },
     };

@@ -106,13 +106,28 @@ function bindEvents() {
     const event = extracted.event;
 
     // Step 2: Show extracted details
+    let locationText = event.location || "(none)";
+    if (event.fullAddress && event.fullAddress !== event.location) {
+      locationText = event.fullAddress;
+    }
+
     addAIMessage(
       `Event: ${event.title}\n` +
       `Date: ${event.date}  Time: ${event.startTime} – ${event.endTime}\n` +
-      `Location: ${event.location || "(none)"}\n` +
+      `Location: ${locationText}\n` +
       `Attendees: ${event.attendees?.length ? event.attendees.join(", ") : "(none)"}`,
       "assistant"
     );
+
+    // Show Google Maps link if available
+    if (event.mapsLink) {
+      const mapsDiv = document.createElement("div");
+      mapsDiv.className = "ai-msg system";
+      mapsDiv.style.cssText = "cursor:pointer;color:#38bdf8;font-size:11px";
+      mapsDiv.textContent = `📍 Open in Google Maps: ${event.fullAddress || event.location}`;
+      mapsDiv.addEventListener("click", () => window.open(event.mapsLink));
+      $("#aiMessages").appendChild(mapsDiv);
+    }
 
     // Step 3: Fetch and display the day's calendar as a visual timeline
     const dayEvents = await gideon.gcalGetDay(event.date);
