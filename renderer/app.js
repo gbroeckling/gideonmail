@@ -516,13 +516,21 @@ Only output the reply body, no subject line.`,
   });
 
   $("#btnAddToList").addEventListener("change", async (e) => {
-    const list = e.target.value;
-    if (!list || !currentMsg) { e.target.value = ""; return; }
+    const rawVal = e.target.value;
+    if (!rawVal || !currentMsg) { e.target.value = ""; return; }
     const addr = currentMsg.from?.address || "";
     const name = currentMsg.from?.name || "";
     if (!addr) { e.target.value = ""; return; }
 
-    await gideon.peopleAdd({ address: addr, name: name, role: list });
+    const isDomain = rawVal.endsWith("_domain");
+    const role = isDomain ? rawVal.replace("_domain", "") : rawVal;
+    const domain = addr.includes("@") ? addr.split("@")[1] : "";
+
+    if (isDomain && domain) {
+      await gideon.peopleAdd({ address: `@${domain}`, name: `All @${domain}`, role });
+    } else {
+      await gideon.peopleAdd({ address: addr, name: name, role });
+    }
     e.target.value = "";
 
     // Refresh message list to show new coloring

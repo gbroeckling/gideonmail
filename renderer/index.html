@@ -77,10 +77,14 @@
             <span id="senderStatus" style="font-size:10px;padding:2px 6px;border-radius:3px"></span>
             <select id="btnAddToList" style="padding:5px 8px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;font-size:12px;cursor:pointer">
               <option value="">Add sender to...</option>
-              <option value="vip" style="color:#3b82f6">VIP (always text me)</option>
-              <option value="watch" style="color:#f59e0b">Watch (AI analyzes)</option>
-              <option value="blocked" style="color:#ef4444">Blocked (auto-delete)</option>
-              <option value="muted" style="color:#94a3b8">Muted (no alerts)</option>
+              <option value="vip">VIP (sender)</option>
+              <option value="vip_domain">VIP (entire domain)</option>
+              <option value="watch">Watch (sender)</option>
+              <option value="watch_domain">Watch (entire domain)</option>
+              <option value="blocked">Blocked (sender)</option>
+              <option value="blocked_domain">Blocked (entire domain)</option>
+              <option value="muted">Muted (sender)</option>
+              <option value="muted_domain">Muted (entire domain)</option>
             </select>
           </div>
           <div id="scanResult" style="display:none;padding:4px 20px;font-size:11px;white-space:pre-wrap"></div>
@@ -201,7 +205,7 @@
         </div>
         <div id="peopleEntries" style="padding:4px 16px;max-height:350px;overflow-y:auto"></div>
         <div style="padding:8px 16px;display:flex;gap:6px;align-items:center">
-          <input type="text" id="peopleAddAddr" placeholder="Email or name" style="flex:1;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
+          <input type="text" id="peopleAddAddr" placeholder="Email, name, or @domain" style="flex:1;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
           <input type="text" id="peopleAddName" placeholder="Label" style="width:90px;padding:6px 10px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;outline:none" />
           <select id="peopleAddRole" style="padding:6px 8px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px">
             <option value="vip">VIP</option>
