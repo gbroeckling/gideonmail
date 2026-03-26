@@ -860,6 +860,17 @@ async function autoTriageNewMail(messages) {
           if (match.actions?.flagImportant) {
             try { await toggleFlag(msg.uid, "flagged"); } catch (e) {}
           }
+
+          // Auto-task: schedule a calendar slot to review this email
+          if (match.actions?.autoTask) {
+            await autoCreateTask(msg);
+          }
+
+          // Deadline detection: include in SMS if found
+          const deadline = await detectDeadline(msg);
+          if (deadline && match.actions?.smsAlert) {
+            try { await sendSMS(`DEADLINE [${match.name || match.address}]: ${msg.subject} — due ${deadline}`); } catch (e) {}
+          }
         }
       } catch (e) { console.error("Watchlist processing failed:", e.message); }
     }
@@ -888,6 +899,12 @@ async function autoTriageNewMail(messages) {
         for (const m of whitelistAlerts) {
           let smsText = `VIP: ${_formatEmailForSms(m, s.format)}`;
           let isMeeting = false;
+
+          // Deadline detection for VIP emails
+          if (store.get("anthropic_api_key")) {
+            const deadline = await detectDeadline(m);
+            if (deadline) smsText += ` [DUE ${deadline}]`;
+          }
 
           // Meeting detection for VIP emails
           if (detectMeetings && store.get("anthropic_api_key")) {
@@ -2506,6 +2523,14 @@ ipcMain.handle("vip-meetings-set", (_, enabled) => {
   return { ok: true };
 });
 
+// ── Do Later (snooze email → auto-schedule calendar task) ───────────────
+ipcMain.handle("do-later", async (_, uid, subject, from) => {
+  try {
+    await autoCreateTask({ uid, subject, from: { name: from || "", address: from || "" } });
+    return { ok: true };
+  } catch (e) { return { error: e.message }; }
+});
+
 ipcMain.handle("ai-clear-history", () => {
   conversationHistory = [];
   return { ok: true };
@@ -2547,6 +2572,160 @@ ipcMain.handle("instructions-update", (_, id, text) => {
 });
 
 // ── App lifecycle ───────────────────────────────────────────────────────────
+// ── Morning Briefing ────────────────────────────────────────────────────
+let briefingSentToday = null;
+
+async function sendMorningBriefing() {
+  const smsTo = store.get("sms_to");
+  const apiKey = store.get("anthropic_api_key");
+  if (!smsTo || !apiKey) return;
+
+  const today = new Date().toDateString();
+  if (briefingSentToday === today) return;
+
+  const hour = new Date().getHours();
+  const briefingHour = store.get("briefing_hour") || 7;
+  if (hour < briefingHour) return;
+
+  try {
+    // Inbox stats
+    const result = await fetchInbox(0, 50);
+    const msgs = result.messages || [];
+    const unread = msgs.filter((m) => !m.seen).length;
+
+    // VIP count
+    const whitelist = (store.get("sms_whitelist") || []).filter((w) => w.enabled);
+    const _matchWl = (msg) => whitelist.some((w) => {
+      const addr = (msg.from?.address || "").toLowerCase();
+      return w.address && addr.includes(w.address);
+    });
+    const vipCount = msgs.filter((m) => !m.seen && _matchWl(m)).length;
+
+    // Pending appointments
+    const pending = (store.get("pending_appointments") || []).length;
+
+    // Calendar today
+    let calendarInfo = "";
+    if (googleAuth?.isConnected) {
+      try {
+        const todayStr = new Date().toISOString().split("T")[0];
+        const token = await googleAuth.getToken();
+        const calId = store.get("google_calendar_id") || "primary";
+        const https = require("https");
+        const params = new URLSearchParams({
+          timeMin: new Date(`${todayStr}T00:00:00`).toISOString(),
+          timeMax: new Date(`${todayStr}T23:59:59`).toISOString(),
+          singleEvents: "true", orderBy: "startTime",
+        });
+        const res = await new Promise((resolve, reject) => {
+          const req = https.request({
+            hostname: "www.googleapis.com",
+            path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?${params}`,
+            headers: { "Authorization": `Bearer ${token}` },
+          }, (r) => { let d = ""; r.on("data", (c) => { d += c; }); r.on("end", () => { try { resolve(JSON.parse(d)); } catch (e) { resolve({}); } }); });
+          req.on("error", reject);
+          req.end();
+        });
+        const events = res.items || [];
+        calendarInfo = events.length ? `${events.length} events` : "calendar clear";
+      } catch (e) { calendarInfo = ""; }
+    }
+
+    const briefing = `Morning: ${unread} unread${vipCount ? `, ${vipCount} VIP` : ""}${pending ? `, ${pending} meetings pending` : ""}${calendarInfo ? `. ${calendarInfo}` : ""}`;
+    await sendSMS(briefing);
+    briefingSentToday = today;
+    console.log("Morning briefing sent");
+  } catch (e) { console.error("Morning briefing failed:", e.message); }
+}
+
+// ── Deadline Detection ──────────────────────────────────────────────────
+async function detectDeadline(msg) {
+  if (!store.get("anthropic_api_key")) return null;
+  try {
+    const client = getAnthropicClient();
+    const resp = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 60,
+      system: `If this email contains a deadline, due date, or response-by date, respond with ONLY the date in YYYY-MM-DD format. If no deadline, respond with ONLY "NONE". Today is ${new Date().toISOString().split("T")[0]}.`,
+      messages: [{ role: "user", content: `From: ${msg.from?.name || msg.from?.address}\nSubject: ${msg.subject}` }],
+    });
+    const text = (resp.content[0]?.text || "").trim();
+    if (text === "NONE" || text.length > 12) return null;
+    return text;
+  } catch (e) { return null; }
+}
+
+// ── Auto-Task for Watch senders ─────────────────────────────────────────
+async function autoCreateTask(msg, eventTitle) {
+  if (!googleAuth?.isConnected) return;
+  try {
+    const token = await googleAuth.getToken();
+    const calId = store.get("google_calendar_id") || "primary";
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    // Find next available 30-min slot (search next 3 days, business hours)
+    const todayStr = new Date().toISOString().split("T")[0];
+    const params = new URLSearchParams({
+      timeMin: new Date().toISOString(),
+      timeMax: new Date(Date.now() + 3 * 86400000).toISOString(),
+      singleEvents: "true", orderBy: "startTime",
+    });
+
+    const https = require("https");
+    const res = await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: "www.googleapis.com",
+        path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?${params}`,
+        headers: { "Authorization": `Bearer ${token}` },
+      }, (r) => { let d = ""; r.on("data", (c) => { d += c; }); r.on("end", () => { try { resolve(JSON.parse(d)); } catch (e) { resolve({}); } }); });
+      req.on("error", reject);
+      req.end();
+    });
+
+    // Find first free 30-min slot between 9am-5pm
+    const events = (res.items || []).map((e) => ({
+      start: new Date(e.start?.dateTime || e.start?.date),
+      end: new Date(e.end?.dateTime || e.end?.date),
+    }));
+
+    let slotStart = null;
+    for (let day = 0; day < 3; day++) {
+      const d = new Date(Date.now() + day * 86400000);
+      for (let h = 9; h < 17; h++) {
+        const candidate = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, 0, 0);
+        if (candidate < new Date()) continue;
+        const candidateEnd = new Date(candidate.getTime() + 30 * 60000);
+        const conflict = events.some((e) => candidate < e.end && candidateEnd > e.start);
+        if (!conflict) { slotStart = candidate; break; }
+      }
+      if (slotStart) break;
+    }
+
+    if (!slotStart) return;
+    const slotEnd = new Date(slotStart.getTime() + 30 * 60000);
+
+    const body = JSON.stringify({
+      summary: eventTitle || `Review: ${msg.subject}`,
+      description: `From: ${msg.from?.name || ""} <${msg.from?.address || ""}>\nAuto-created by GideonMail`,
+      start: { dateTime: slotStart.toISOString(), timeZone: timezone },
+      end: { dateTime: slotEnd.toISOString(), timeZone: timezone },
+    });
+
+    await new Promise((resolve) => {
+      const req = https.request({
+        hostname: "www.googleapis.com",
+        path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?sendUpdates=none`,
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+      }, (r) => { let d = ""; r.on("data", (c) => { d += c; }); r.on("end", () => resolve(d)); });
+      req.on("error", () => resolve(null));
+      req.write(body); req.end();
+    });
+
+    console.log(`Auto-task: scheduled "${eventTitle || msg.subject}" at ${slotStart.toLocaleTimeString()}`);
+  } catch (e) { console.error("Auto-task failed:", e.message); }
+}
+
 app.whenReady().then(() => {
   createWindow();
   createTray();
@@ -2558,6 +2737,11 @@ app.whenReady().then(() => {
       startIdle();
     }).catch(() => {});
   }
+
+  // Morning briefing check every 15 min
+  setInterval(() => sendMorningBriefing().catch(() => {}), 900000);
+  // Check immediately too
+  setTimeout(() => sendMorningBriefing().catch(() => {}), 10000);
 });
 
 app.on("window-all-closed", () => {

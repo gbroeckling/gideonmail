@@ -101,6 +101,9 @@ contextBridge.exposeInMainWorld("gideon", {
   convoSaveConfig: (cfg) => ipcRenderer.invoke("convo-save-config", cfg),
   convoTest:       ()    => ipcRenderer.invoke("convo-test"),
 
+  // Do Later (auto-schedule)
+  doLater: (uid, subject, from) => ipcRenderer.invoke("do-later", uid, subject, from),
+
   // Pending appointments
   pendingAppointmentsGet:   () => ipcRenderer.invoke("pending-appointments-get"),
   pendingAppointmentsClear: (uid) => ipcRenderer.invoke("pending-appointments-clear", uid),

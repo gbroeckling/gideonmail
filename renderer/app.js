@@ -63,6 +63,21 @@ function bindEvents() {
   $("#btnForward").addEventListener("click", () => openCompose("forward"));
   $("#btnDelete").addEventListener("click", deleteCurrent);
   $("#btnStar").addEventListener("click", starCurrent);
+  // ── Do Later ──────────────────────────────────────────────────────────
+  $("#btnLater").addEventListener("click", async () => {
+    if (!currentMsg) return;
+    $("#btnLater").textContent = "Scheduling...";
+    $("#btnLater").disabled = true;
+    const r = await gideon.doLater(currentMsg.uid, currentMsg.subject, currentMsg.from?.address);
+    if (r.ok) {
+      $("#btnLater").textContent = "Scheduled!";
+      setTimeout(() => { $("#btnLater").textContent = "🕔 Later"; $("#btnLater").disabled = false; }, 2000);
+    } else {
+      $("#btnLater").textContent = "🕔 Later";
+      $("#btnLater").disabled = false;
+    }
+  });
+
   // ── Create Task (Calendar) ──────────────────────────────────────────────
   $("#btnTask").addEventListener("click", async () => {
     if (!currentMsg) return;
@@ -1035,6 +1050,7 @@ async function renderPeople() {
           { key: "smsAlert", label: "SMS", color: "#22c55e" },
           { key: "autoCalendar", label: "Cal", color: "#f59e0b" },
           { key: "flagImportant", label: "Flag", color: "#3b82f6" },
+          { key: "autoTask", label: "Task", color: "#a78bfa" },
         ];
         for (const ad of actionDefs) {
           const chip = document.createElement("span");
