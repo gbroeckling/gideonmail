@@ -1766,8 +1766,25 @@ async function aiTriageInbox() {
   bulkDiv.style.cssText = "display:flex;flex-wrap:wrap;gap:4px";
 
   const bulkActions = [
-    { label: "Delete all LOW", action: async () => { addAIMessage("Tell me which emails to delete — e.g., 'delete all newsletters' or 'delete #3, #5, #7'", "system"); } },
-    { label: "Star all URGENT", action: async () => { addAIMessage("Starring urgent emails... Tell me which ones to star.", "system"); } },
+    { label: "Delete all LOW", action: async () => {
+      // Parse triage results to find LOW/SKIP emails
+      const triageText = result.text || "";
+      const skipLines = triageText.split("\n").filter((l) => l.toUpperCase().includes("SKIP") || l.toUpperCase().includes("LOW"));
+      if (!skipLines.length) { addAIMessage("No LOW/SKIP emails found in triage.", "system"); return; }
+      if (!confirm(`Delete ${skipLines.length} low-priority emails?`)) return;
+      addAIMessage(`Deleting ${skipLines.length} low-priority emails...`, "system");
+      await gideon.aiChat(`Delete all emails that were marked SKIP or LOW in the triage you just did. Here are the ones to delete:\n${skipLines.join("\n")}`, null);
+      addAIMessage("Done. Refresh your inbox.", "system");
+      loadMessages();
+    }},
+    { label: "Star all URGENT", action: async () => {
+      const triageText = result.text || "";
+      const urgentLines = triageText.split("\n").filter((l) => l.toUpperCase().includes("URGENT"));
+      if (!urgentLines.length) { addAIMessage("No URGENT emails found.", "system"); return; }
+      addAIMessage(`Starring ${urgentLines.length} urgent emails...`, "system");
+      await gideon.aiChat(`Star/flag all emails that were marked URGENT in the triage. Here they are:\n${urgentLines.join("\n")}`, null);
+      addAIMessage("Done.", "system");
+    }},
     { label: "Ask AI to act", action: () => { $("#aiInput").value = "Based on the triage, "; $("#aiInput").focus(); } },
   ];
 
