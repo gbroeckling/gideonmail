@@ -519,8 +519,9 @@ function _addSmsSentUid(uid) {
 function _getLastCheckTime() {
   return store.get("sms_last_check_time") || null;
 }
-function _setLastCheckTime() {
-  store.set("sms_last_check_time", new Date().toISOString());
+function _setLastCheckTime(val) {
+  if (val === null) store.delete("sms_last_check_time");
+  else store.set("sms_last_check_time", new Date().toISOString());
 }
 
 // ── SMS delivery with smart settings ────────────────────────────────────
@@ -2822,12 +2823,12 @@ ipcMain.handle("check-now", async () => {
     log.push(`Quiet hours: ${_isQuietHours() ? "YES (suppressed)" : "No"}`);
     log.push(`Rate limit: ${_checkRateLimit() || "OK"}`);
 
-    // Actually run the triage
-    if (unread.length > 0) {
-      log.push("Running full auto-triage...");
-      await autoTriageNewMail(allMsgs);
-      log.push("Done.");
-    }
+    // Force-run everything (bypass debounce for manual check)
+    log.push("Running full auto-triage (bypassing debounce)...");
+    _setLastCheckTime(null); // clear debounce so autoTriageNewMail runs
+    await autoTriageNewMail(allMsgs);
+    await lowTouchProcess(allMsgs);
+    log.push("Done.");
 
     return { ok: true, message: log.join("\n") };
   } catch (e) {
