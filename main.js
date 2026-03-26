@@ -1327,9 +1327,26 @@ async function startIdle() {
       await autoTriageNewMail(initial.messages || []);
     } catch (e) {}
 
-    // Auto-check on configurable interval (default 120 min / 2 hours)
+    // Fast VIP check every 5 minutes — just checks for new VIP/Watch emails
+    // Lightweight: no AI triage, no security scan, just list matching + SMS
+    const fastInterval = setInterval(async () => {
+      try {
+        const result = await fetchInbox(0, 50);
+        mainWindow?.webContents?.send("inbox-updated", result);
+        // Quick VIP/Watch check only (no full triage)
+        const msgs = result.messages || [];
+        const sentUids = _getSmsSentUids();
+        const newUnread = msgs.filter((m) => !m.seen && !sentUids.has(m.uid));
+        if (newUnread.length > 0) {
+          await autoTriageNewMail(msgs);
+        }
+      } catch (e) {}
+    }, 300000); // 5 minutes
+
+    // Full auto-check on configurable interval (default 120 min / 2 hours)
+    // Includes: AI triage, security scanning, blacklist cleanup, action reply processing
     const checkMin = store.get("auto_check_interval_min") || 120;
-    console.log(`Auto-check interval: ${checkMin} minutes`);
+    console.log(`Auto-check interval: ${checkMin} minutes, fast VIP check: 5 minutes`);
     const interval = setInterval(async () => {
       try {
         const result = await fetchInbox(0, 50);
@@ -1340,7 +1357,7 @@ async function startIdle() {
       }
     }, checkMin * 60000);
 
-    app.on("before-quit", () => clearInterval(interval));
+    app.on("before-quit", () => { clearInterval(interval); clearInterval(fastInterval); });
   } catch (e) {
     idleActive = false;
   }
