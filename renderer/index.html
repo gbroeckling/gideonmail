@@ -150,6 +150,16 @@
       <label>Textbelt API Key<input type="text" id="cfgTextbeltKey" placeholder="Leave blank for 1 free SMS/day" /></label>
       <div style="padding:4px 20px"><button id="cfgSmsTest" style="padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px">Send Test SMS</button> <span id="cfgSmsResult" style="font-size:11px"></span></div>
       <hr>
+      <div style="padding:6px 20px;font-size:11px;color:var(--accent);font-weight:600">Email Alerts</div>
+      <label>Send alerts to email<input type="email" id="cfgAlertEmail" placeholder="alerts@example.com" /></label>
+      <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">Same alerts as SMS, sent as email. Leave blank to disable. Works alongside SMS — both can be active.</div>
+      <hr>
+      <div style="padding:6px 20px;font-size:11px;color:var(--warm);font-weight:600">Social Media Alerts <span style="font-size:9px;color:var(--fg2);font-weight:400">(experimental)</span></div>
+      <label><input type="checkbox" id="cfgAlertSlack" disabled /> Slack webhook <span style="font-size:10px;color:var(--fg2)">— coming soon</span></label>
+      <label><input type="checkbox" id="cfgAlertDiscord" disabled /> Discord webhook <span style="font-size:10px;color:var(--fg2)">— coming soon</span></label>
+      <label><input type="checkbox" id="cfgAlertTelegram" disabled /> Telegram bot <span style="font-size:10px;color:var(--fg2)">— coming soon</span></label>
+      <label><input type="checkbox" id="cfgAlertTeams" disabled /> Microsoft Teams <span style="font-size:10px;color:var(--fg2)">— coming soon</span></label>
+      <hr>
       <label><input type="checkbox" id="cfgAutoLaunch" /> Start GideonMail on Windows login (minimized to tray)</label>
       <hr>
       <div class="settings-actions">

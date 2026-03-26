@@ -903,6 +903,7 @@ async function openSettings() {
   $("#cfgGcalStatus").style.color = gcalStatus.connected ? "#22c55e" : "#94a3b8";
   const smsCfg = await gideon.smsGetConfig();
   $("#cfgSmsTo").value = smsCfg.smsTo || "";
+  $("#cfgAlertEmail").value = smsCfg.alertEmailTo || "";
   $("#cfgTextbeltKey").value = smsCfg.textbeltKey || "";
   $("#cfgSmsResult").textContent = "";
   const alState = await gideon.autolaunchGet();
@@ -956,6 +957,7 @@ async function saveSettingsQuiet() {
   await gideon.smsSaveConfig({
     smsTo: $("#cfgSmsTo").value.trim(),
     textbeltKey: $("#cfgTextbeltKey").value.trim(),
+    alertEmailTo: $("#cfgAlertEmail").value.trim(),
   });
 }
 

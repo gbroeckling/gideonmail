@@ -632,6 +632,48 @@ async function sendSMS(message) {
   }
 }
 
+// ── Email alert (alternative/addition to SMS) ───────────────────────────
+async function sendEmailAlert(message) {
+  const alertEmail = store.get("alert_email_to");
+  if (!alertEmail) return;
+
+  const cfg = store.get("account");
+  if (!cfg) return;
+
+  try {
+    const transport = nodemailer.createTransport({
+      host: cfg.smtpHost,
+      port: cfg.smtpPort || 587,
+      secure: cfg.smtpSecure || false,
+      auth: { user: cfg.username, pass: cfg.password },
+      tls: { rejectUnauthorized: false },
+    });
+
+    await transport.sendMail({
+      from: `GideonMail Alerts <${cfg.email || cfg.username}>`,
+      to: alertEmail,
+      subject: `GideonMail: ${message.substring(0, 80)}`,
+      text: message,
+    });
+  } catch (e) {
+    console.error("Email alert failed:", e.message);
+  }
+}
+
+// Unified alert: sends to SMS and/or email based on config
+const _originalSendSMS = sendSMS;
+async function sendAlert(message) {
+  const useSms = !!store.get("sms_to");
+  const useEmail = !!store.get("alert_email_to");
+
+  if (useSms) {
+    try { await sendSMS(message); } catch (e) {}
+  }
+  if (useEmail) {
+    try { await sendEmailAlert(message); } catch (e) {}
+  }
+}
+
 async function checkActiveConversations(newMsgs) {
   // Check if enabled
   if (store.get("convo_alert_enabled") === false) return [];
@@ -795,7 +837,7 @@ async function autoTriageNewMail(messages) {
 
           // SMS alert with AI summary
           if (match.actions?.smsAlert && smsTo) {
-            await sendSMS(`WATCH [${match.name || match.address}]: ${analysis.substring(0, 120)}`);
+            await sendAlert(`WATCH [${match.name || match.address}]: ${analysis.substring(0, 120)}`);
             _addSmsSentUid(msg.uid);
           }
 
@@ -871,7 +913,7 @@ async function autoTriageNewMail(messages) {
           // Deadline detection: include in SMS if found
           const deadline = await detectDeadline(msg);
           if (deadline && match.actions?.smsAlert) {
-            try { await sendSMS(`DEADLINE [${match.name || match.address}]: ${msg.subject} — due ${deadline}`); } catch (e) {}
+            try { await sendAlert(`DEADLINE [${match.name || match.address}]: ${msg.subject} — due ${deadline}`); } catch (e) {}
           }
         }
       } catch (e) { console.error("Watchlist processing failed:", e.message); }
@@ -983,7 +1025,7 @@ async function autoTriageNewMail(messages) {
             } catch (notifErr) { console.error("Meeting notification failed:", notifErr.message); }
           }
 
-          try { await sendSMS(smsText); _addSmsSentUid(m.uid); } catch (e) { console.error("VIP SMS failed:", e.message); }
+          try { await sendAlert(smsText); _addSmsSentUid(m.uid); } catch (e) { console.error("VIP SMS failed:", e.message); }
         }
       }
     }
@@ -997,7 +1039,7 @@ async function autoTriageNewMail(messages) {
         const summary = conversationAlerts.map((a) =>
           `${a.from}: ${a.subject} (you replied ${a.replyCount}x)`
         ).join("\n");
-        await sendSMS(`GideonMail: ${conversationAlerts.length} email${conversationAlerts.length > 1 ? "s" : ""} in active conversations:\n${summary}`);
+        await sendAlert(`GideonMail: ${conversationAlerts.length} email${conversationAlerts.length > 1 ? "s" : ""} in active conversations:\n${summary}`);
         conversationAlerts.forEach((a) => _addSmsSentUid(a.uid));
       }
     } catch (e) {
@@ -1055,7 +1097,7 @@ Default to SKIP. When in doubt, SKIP. Only 1 in 20 emails should be URGENT.${get
         return `${m.from?.name || m.from?.address}: ${m.subject}`;
       }).join("\n");
 
-      await sendSMS(`GideonMail: ${urgentLines.length} urgent email${urgentLines.length > 1 ? "s" : ""}:\n${urgentSummary}`);
+      await sendAlert(`GideonMail: ${urgentLines.length} urgent email${urgentLines.length > 1 ? "s" : ""}:\n${urgentSummary}`);
       untriaged.slice(0, urgentLines.length).forEach((m) => _addSmsSentUid(m.uid));
     }
   } catch (e) {
@@ -1714,6 +1756,7 @@ ipcMain.handle("sms-get-config", () => {
   return {
     smsTo: store.get("sms_to") || "",
     textbeltKey: store.get("textbelt_key") ? "••••••••" : "",
+    alertEmailTo: store.get("alert_email_to") || "",
   };
 });
 
@@ -1721,6 +1764,7 @@ ipcMain.handle("sms-save-config", (_, cfg) => {
   // Never overwrite with empty — only update if value is non-empty or explicitly clearing
   if (cfg.smsTo) store.set("sms_to", cfg.smsTo);
   if (cfg.textbeltKey && cfg.textbeltKey !== "••••••••") store.set("textbelt_key", cfg.textbeltKey);
+  if (cfg.alertEmailTo !== undefined) store.set("alert_email_to", cfg.alertEmailTo);
   return { ok: true };
 });
 
@@ -2295,7 +2339,7 @@ ipcMain.handle("convo-test", async () => {
     // Send the SMS
     const smsTo = store.get("sms_to");
     if (smsTo) {
-      await sendSMS(`GideonMail: ${alerts.length} email${alerts.length > 1 ? "s" : ""} in active conversations:\n${summary}`);
+      await sendAlert(`GideonMail: ${alerts.length} email${alerts.length > 1 ? "s" : ""} in active conversations:\n${summary}`);
     }
 
     return { ok: true, message: `Found ${alerts.length} active conversation${alerts.length > 1 ? "s" : ""}:\n${summary}${smsTo ? "\nSMS sent!" : "\n(No phone number configured — SMS not sent)"}` };
@@ -2732,7 +2776,7 @@ async function sendMorningBriefing() {
     }
 
     const briefing = `Morning: ${unread} unread${vipCount ? `, ${vipCount} VIP` : ""}${pending ? `, ${pending} meetings pending` : ""}${calendarInfo ? `. ${calendarInfo}` : ""}`;
-    await sendSMS(briefing);
+    await sendAlert(briefing);
     briefingSentToday = today;
     console.log("Morning briefing sent");
   } catch (e) { console.error("Morning briefing failed:", e.message); }
