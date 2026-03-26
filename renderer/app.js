@@ -66,15 +66,26 @@ function bindEvents() {
   // ── Do Later ──────────────────────────────────────────────────────────
   $("#btnLater").addEventListener("click", async () => {
     if (!currentMsg) return;
-    $("#btnLater").textContent = "Scheduling...";
-    $("#btnLater").disabled = true;
+    if (!aiOpen) toggleAI();
+
+    addAIMessage(`Schedule time to handle: "${currentMsg.subject}"`, "system");
+
+    // Default: tomorrow 9am, 30 min
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().split("T")[0];
+    const chosen = await showTimePicker({
+      title: `Review: ${currentMsg.subject}`,
+      date: tomorrow,
+      startTime: "09:00",
+      endTime: "09:30",
+    }, []);
+
+    if (!chosen) { addAIMessage("Cancelled.", "system"); return; }
+
     const r = await gideon.doLater(currentMsg.uid, currentMsg.subject, currentMsg.from?.address);
     if (r.ok) {
-      $("#btnLater").textContent = "Scheduled!";
-      setTimeout(() => { $("#btnLater").textContent = "🕔 Later"; $("#btnLater").disabled = false; }, 2000);
+      addAIMessage(`Scheduled for ${chosen.date} ${chosen.startTime}–${chosen.endTime}`, "system");
     } else {
-      $("#btnLater").textContent = "🕔 Later";
-      $("#btnLater").disabled = false;
+      addAIMessage("Failed to schedule: " + (r.error || ""), "error");
     }
   });
 
@@ -218,53 +229,23 @@ function bindEvents() {
       $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
     }
 
-    // Step 4: Add confirm/edit buttons
-    const actionDiv = document.createElement("div");
-    actionDiv.className = "ai-msg system";
-    actionDiv.style.cssText = "display:flex;gap:6px;flex-wrap:wrap";
+    // Step 4: Interactive time picker
+    addAIMessage("Choose your time — click the timeline, change date, or adjust duration:", "system");
+    const chosen = await showTimePicker(event, dayEvents.ok ? dayEvents.events : []);
+    if (!chosen) { addAIMessage("Cancelled.", "system"); return; }
 
-    const confirmBtn = document.createElement("button");
-    confirmBtn.style.cssText = "padding:4px 12px;background:#1a3a0a;border:1px solid #4ade80;color:#86efac;border-radius:4px;cursor:pointer;font-size:11px";
-    confirmBtn.textContent = "Add to Calendar";
-    confirmBtn.addEventListener("click", async () => {
-      confirmBtn.disabled = true;
-      confirmBtn.textContent = "Adding...";
-      const result = await gideon.gcalCreateEvent(event);
-      if (result.ok) {
-        addAIMessage(`Event created! ${result.link ? result.link : ""}`, "system");
-      } else {
-        addAIMessage("Failed: " + result.error, "error");
-      }
-      actionDiv.remove();
-    });
+    // Update event with chosen time
+    event.date = chosen.date;
+    event.startTime = chosen.startTime;
+    event.endTime = chosen.endTime;
 
-    const editBtn = document.createElement("button");
-    editBtn.style.cssText = "padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px";
-    editBtn.textContent = "Edit Details";
-    editBtn.addEventListener("click", () => {
-      const newTitle = prompt("Title:", event.title);
-      if (newTitle !== null) event.title = newTitle;
-      const newDate = prompt("Date (YYYY-MM-DD):", event.date);
-      if (newDate !== null) event.date = newDate;
-      const newStart = prompt("Start time (HH:MM):", event.startTime);
-      if (newStart !== null) event.startTime = newStart;
-      const newEnd = prompt("End time (HH:MM):", event.endTime);
-      if (newEnd !== null) event.endTime = newEnd;
-      const newLoc = prompt("Location:", event.location || "");
-      if (newLoc !== null) event.location = newLoc;
-      addAIMessage(`Updated: ${event.title} on ${event.date} ${event.startTime}–${event.endTime}`, "system");
-    });
-
-    const cancelBtn = document.createElement("button");
-    cancelBtn.style.cssText = "padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px";
-    cancelBtn.textContent = "Cancel";
-    cancelBtn.addEventListener("click", () => { actionDiv.remove(); addAIMessage("Cancelled.", "system"); });
-
-    actionDiv.appendChild(confirmBtn);
-    actionDiv.appendChild(editBtn);
-    actionDiv.appendChild(cancelBtn);
-    $("#aiMessages").appendChild(actionDiv);
-    $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
+    addAIMessage(`Creating: ${event.title}\n${event.date} ${event.startTime}–${event.endTime}`, "system");
+    const result = await gideon.gcalCreateEvent(event);
+    if (result.ok) {
+      addAIMessage(`Event created! ${result.link || ""}`, "system");
+    } else {
+      addAIMessage("Failed: " + result.error, "error");
+    }
   });
 
   $("#btnAddToList").addEventListener("change", async (e) => {
@@ -1719,6 +1700,236 @@ function formatSize(bytes) {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
   return (bytes / 1048576).toFixed(1) + " MB";
+}
+
+// ── Interactive Calendar Time Picker ─────────────────────────────────────
+// Returns a Promise that resolves with { date, startTime, endTime } or null if cancelled
+function showTimePicker(event, existingEvents) {
+  return new Promise((resolve) => {
+    const picker = document.createElement("div");
+    picker.className = "ai-msg assistant";
+    picker.style.cssText = "padding:10px 12px";
+
+    let selDate = event.date || new Date().toISOString().split("T")[0];
+    let selStart = event.startTime || "09:00";
+    let selDuration = 30; // minutes
+    // Calculate duration from event if endTime exists
+    if (event.endTime && event.startTime) {
+      const [sh, sm] = event.startTime.split(":").map(Number);
+      const [eh, em] = event.endTime.split(":").map(Number);
+      selDuration = Math.max(15, (eh * 60 + em) - (sh * 60 + sm));
+    }
+    let dayEvents = existingEvents || [];
+
+    function calcEndTime() {
+      const [h, m] = selStart.split(":").map(Number);
+      const total = h * 60 + m + selDuration;
+      return `${String(Math.floor(total / 60) % 24).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+    }
+
+    function hasConflict() {
+      const endTime = calcEndTime();
+      return dayEvents.some((e) => {
+        const es = e.start ? new Date(e.start) : null;
+        const ee = e.end ? new Date(e.end) : null;
+        if (!es || !ee) return false;
+        const esHM = `${String(es.getHours()).padStart(2, "0")}:${String(es.getMinutes()).padStart(2, "0")}`;
+        const eeHM = `${String(ee.getHours()).padStart(2, "0")}:${String(ee.getMinutes()).padStart(2, "0")}`;
+        return selStart < eeHM && endTime > esHM;
+      });
+    }
+
+    async function loadDay() {
+      try {
+        const result = await gideon.gcalGetDay(selDate);
+        if (result.ok) dayEvents = result.events || [];
+        else dayEvents = [];
+      } catch (e) { dayEvents = []; }
+      render();
+    }
+
+    function render() {
+      picker.innerHTML = "";
+      const endTime = calcEndTime();
+      const conflict = hasConflict();
+
+      // Date navigation
+      const dateRow = document.createElement("div");
+      dateRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px";
+
+      const prevDay = document.createElement("button");
+      prevDay.style.cssText = "background:var(--bg2);border:1px solid var(--bg3);color:var(--fg);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:12px";
+      prevDay.textContent = "◀";
+      prevDay.addEventListener("click", () => {
+        const d = new Date(selDate + "T12:00:00");
+        d.setDate(d.getDate() - 1);
+        selDate = d.toISOString().split("T")[0];
+        loadDay();
+      });
+
+      const dateInput = document.createElement("input");
+      dateInput.type = "date";
+      dateInput.value = selDate;
+      dateInput.style.cssText = "flex:1;padding:4px 8px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px;text-align:center";
+      dateInput.addEventListener("change", () => {
+        selDate = dateInput.value;
+        loadDay();
+      });
+
+      const nextDay = document.createElement("button");
+      nextDay.style.cssText = "background:var(--bg2);border:1px solid var(--bg3);color:var(--fg);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:12px";
+      nextDay.textContent = "▶";
+      nextDay.addEventListener("click", () => {
+        const d = new Date(selDate + "T12:00:00");
+        d.setDate(d.getDate() + 1);
+        selDate = d.toISOString().split("T")[0];
+        loadDay();
+      });
+
+      dateRow.appendChild(prevDay);
+      dateRow.appendChild(dateInput);
+      dateRow.appendChild(nextDay);
+      picker.appendChild(dateRow);
+
+      // Day label
+      const dayLabel = document.createElement("div");
+      const dayDate = new Date(selDate + "T12:00:00");
+      dayLabel.style.cssText = "font-size:10px;color:var(--fg2);margin-bottom:6px;text-align:center";
+      dayLabel.textContent = dayDate.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+      picker.appendChild(dayLabel);
+
+      // Visual timeline (8am-8pm)
+      const timeline = document.createElement("div");
+      timeline.style.cssText = "position:relative;background:var(--bg2);border-radius:6px;padding:4px;margin-bottom:8px;min-height:180px";
+
+      const hours = [];
+      for (let h = 8; h <= 20; h++) hours.push(h);
+      const totalMin = (20 - 8) * 60;
+
+      // Hour labels and grid lines
+      for (const h of hours) {
+        const pct = ((h - 8) * 60 / totalMin * 100);
+        const line = document.createElement("div");
+        line.style.cssText = `position:absolute;left:40px;right:4px;top:${pct}%;height:1px;background:var(--border)`;
+        timeline.appendChild(line);
+        const label = document.createElement("div");
+        label.style.cssText = `position:absolute;left:2px;top:${pct}%;font-size:9px;color:var(--fg2);transform:translateY(-50%)`;
+        label.textContent = `${h > 12 ? h - 12 : h}${h >= 12 ? "pm" : "am"}`;
+        timeline.appendChild(label);
+      }
+
+      // Existing events as blocks
+      for (const ev of dayEvents) {
+        const es = ev.start ? new Date(ev.start) : null;
+        const ee = ev.end ? new Date(ev.end) : null;
+        if (!es || !ee) continue;
+        const startMin = es.getHours() * 60 + es.getMinutes() - 8 * 60;
+        const endMin = ee.getHours() * 60 + ee.getMinutes() - 8 * 60;
+        if (startMin < 0 && endMin < 0) continue;
+        const top = Math.max(0, startMin / totalMin * 100);
+        const height = Math.max(1, (Math.min(endMin, totalMin) - Math.max(startMin, 0)) / totalMin * 100);
+        const block = document.createElement("div");
+        block.style.cssText = `position:absolute;left:42px;right:6px;top:${top}%;height:${height}%;background:#2a2a32;border-radius:3px;padding:1px 4px;overflow:hidden;border-left:2px solid #64748b`;
+        block.innerHTML = `<div style="font-size:9px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(ev.title)}</div>`;
+        timeline.appendChild(block);
+      }
+
+      // Proposed event block (green, clickable to indicate selected)
+      const [sh, sm] = selStart.split(":").map(Number);
+      const propStartMin = sh * 60 + sm - 8 * 60;
+      const propTop = Math.max(0, propStartMin / totalMin * 100);
+      const propHeight = Math.max(2, selDuration / totalMin * 100);
+      const propBlock = document.createElement("div");
+      propBlock.style.cssText = `position:absolute;left:42px;right:6px;top:${propTop}%;height:${propHeight}%;background:${conflict ? "#7f1d1d" : "#1a3a0a"};border:2px solid ${conflict ? "#ef4444" : "#4ade80"};border-radius:3px;padding:1px 4px;cursor:ns-resize;z-index:2`;
+      propBlock.innerHTML = `<div style="font-size:9px;color:${conflict ? "#fca5a5" : "#86efac"};font-weight:600">${selStart}–${endTime} ${event.title || "New event"}${conflict ? " CONFLICT" : ""}</div>`;
+      timeline.appendChild(propBlock);
+
+      // Click on timeline to move event
+      timeline.addEventListener("click", (e) => {
+        const rect = timeline.getBoundingClientRect();
+        const y = e.clientY - rect.top;
+        const pct2 = y / rect.height;
+        const clickMin = Math.round(pct2 * totalMin / 15) * 15 + 8 * 60;
+        selStart = `${String(Math.floor(clickMin / 60)).padStart(2, "0")}:${String(clickMin % 60).padStart(2, "0")}`;
+        render();
+      });
+
+      picker.appendChild(timeline);
+
+      // Time controls
+      const controls = document.createElement("div");
+      controls.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap";
+
+      const timeLabel = document.createElement("span");
+      timeLabel.style.cssText = "font-size:11px;color:var(--fg2)";
+      timeLabel.textContent = "Time:";
+
+      const startInput = document.createElement("input");
+      startInput.type = "time";
+      startInput.value = selStart;
+      startInput.style.cssText = "padding:3px 6px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:11px";
+      startInput.addEventListener("change", () => { selStart = startInput.value; render(); });
+
+      const durLabel = document.createElement("span");
+      durLabel.style.cssText = "font-size:11px;color:var(--fg2)";
+      durLabel.textContent = "Duration:";
+
+      const durDown = document.createElement("button");
+      durDown.style.cssText = "padding:2px 6px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg);border-radius:3px;cursor:pointer;font-size:11px";
+      durDown.textContent = "−";
+      durDown.addEventListener("click", () => { selDuration = Math.max(15, selDuration - 15); render(); });
+
+      const durDisplay = document.createElement("span");
+      durDisplay.style.cssText = "font-size:11px;color:var(--fg);min-width:40px;text-align:center";
+      durDisplay.textContent = selDuration >= 60 ? `${Math.floor(selDuration / 60)}h${selDuration % 60 ? selDuration % 60 + "m" : ""}` : `${selDuration}m`;
+
+      const durUp = document.createElement("button");
+      durUp.style.cssText = "padding:2px 6px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg);border-radius:3px;cursor:pointer;font-size:11px";
+      durUp.textContent = "+";
+      durUp.addEventListener("click", () => { selDuration = Math.min(480, selDuration + 15); render(); });
+
+      controls.appendChild(timeLabel);
+      controls.appendChild(startInput);
+      controls.appendChild(durLabel);
+      controls.appendChild(durDown);
+      controls.appendChild(durDisplay);
+      controls.appendChild(durUp);
+      picker.appendChild(controls);
+
+      // Conflict warning
+      if (conflict) {
+        const warn = document.createElement("div");
+        warn.style.cssText = "font-size:10px;color:#ef4444;font-weight:600;margin-bottom:6px";
+        warn.textContent = "⚠ Time conflict — click the timeline or change the time above";
+        picker.appendChild(warn);
+      }
+
+      // Action buttons
+      const actions = document.createElement("div");
+      actions.style.cssText = "display:flex;gap:6px";
+
+      const confirmBtn = document.createElement("button");
+      confirmBtn.style.cssText = `padding:5px 16px;background:${conflict ? "var(--bg3)" : "#1a3a0a"};border:1px solid ${conflict ? "var(--fg2)" : "#4ade80"};color:${conflict ? "var(--fg2)" : "#86efac"};border-radius:4px;cursor:pointer;font-size:11px;font-weight:600`;
+      confirmBtn.textContent = conflict ? "Confirm Anyway" : "Confirm";
+      confirmBtn.addEventListener("click", () => {
+        picker.remove();
+        resolve({ date: selDate, startTime: selStart, endTime: calcEndTime() });
+      });
+
+      const cancelBtn = document.createElement("button");
+      cancelBtn.style.cssText = "padding:5px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px";
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.addEventListener("click", () => { picker.remove(); resolve(null); });
+
+      actions.appendChild(confirmBtn);
+      actions.appendChild(cancelBtn);
+      picker.appendChild(actions);
+    }
+
+    $("#aiMessages").appendChild(picker);
+    $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
+    loadDay();
+  });
 }
 
 // ── Pending appointments banner ──────────────────────────────────────────
