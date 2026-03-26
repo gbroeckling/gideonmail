@@ -867,10 +867,10 @@ async function autoTriageNewMail(messages) {
     }
   }
 
-  // ── Check for active conversations ────────────────────────────────────
+  // ── Check for active conversations (only SMS-eligible senders) ─────────
   if (smsTo) {
     try {
-      const conversationAlerts = await checkActiveConversations(newMsgs);
+      const conversationAlerts = await checkActiveConversations(smsEligible);
       if (conversationAlerts.length > 0) {
         const summary = conversationAlerts.map((a) =>
           `${a.from}: ${a.subject} (you replied ${a.replyCount}x)`
@@ -884,26 +884,41 @@ async function autoTriageNewMail(messages) {
   }
 
   // ── AI triage for importance ──────────────────────────────────────────
+  // Only triage emails NOT already handled by VIP/Watch/Conversation alerts
   const apiKey = store.get("anthropic_api_key");
-  if (!apiKey || !smsTo) return;
+  if (!apiKey || !smsTo) { _setLastCheckTime(); return; }
+
+  const alreadySentUids = _getSmsSentUids();
+  const untriaged = smsEligible.filter((m) => !alreadySentUids.has(m.uid));
+  if (!untriaged.length) { _setLastCheckTime(); return; }
 
   try {
     const client = getAnthropicClient();
     const account = store.get("account") || {};
 
-    // Only triage SMS-eligible emails (excludes greylist + blacklist)
-    const emailList = smsEligible.slice(0, 5).map((m) => {
+    const emailList = untriaged.slice(0, 5).map((m) => {
       return `From: ${m.from?.name || m.from?.address || "Unknown"}\nSubject: ${m.subject}\nDate: ${m.date}`;
     }).join("\n---\n");
 
     const response = await client.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 256,
-      system: `You are an email importance filter for ${account.displayName || "the user"}.
+      system: `You are an extremely selective email importance filter for ${account.displayName || "the user"}.
 For each email, respond with ONLY "URGENT" or "SKIP" followed by a 5-word reason.
-URGENT means: needs action within hours, from a real person about something important.
-SKIP means: marketing, newsletter, automated notification, spam, or can wait.
-Be very selective — only flag truly urgent emails.${getInstructionsBlock()}`,
+
+URGENT means ALL of these must be true:
+- From a real human being (not automated, not marketing, not a newsletter, not a notification system)
+- Requires the user's personal action within hours
+- Contains a specific request, question, or time-sensitive matter
+
+SKIP means ANY of these:
+- Marketing, newsletter, promotion, or advertisement
+- Automated notification (cron, server alert, social media, shipping update)
+- Spam or unsolicited
+- Informational only (no action needed)
+- Can wait more than 24 hours
+
+Default to SKIP. When in doubt, SKIP. Only 1 in 20 emails should be URGENT.${getInstructionsBlock()}`,
       messages: [{ role: "user", content: emailList }],
     });
 
@@ -911,12 +926,12 @@ Be very selective — only flag truly urgent emails.${getInstructionsBlock()}`,
     const urgentLines = triageText.split("\n").filter((l) => l.toUpperCase().startsWith("URGENT"));
 
     if (urgentLines.length > 0) {
-      const urgentSummary = smsEligible.slice(0, urgentLines.length).map((m, i) => {
+      const urgentSummary = untriaged.slice(0, urgentLines.length).map((m, i) => {
         return `${m.from?.name || m.from?.address}: ${m.subject}`;
       }).join("\n");
 
       await sendSMS(`GideonMail: ${urgentLines.length} urgent email${urgentLines.length > 1 ? "s" : ""}:\n${urgentSummary}`);
-      smsEligible.slice(0, urgentLines.length).forEach((m) => _addSmsSentUid(m.uid));
+      untriaged.slice(0, urgentLines.length).forEach((m) => _addSmsSentUid(m.uid));
     }
   } catch (e) {
     console.error("AI auto-triage failed:", e.message);
