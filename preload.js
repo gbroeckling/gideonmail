@@ -42,6 +42,10 @@ contextBridge.exposeInMainWorld("gideon", {
   autocheckGet:  () => ipcRenderer.invoke("autocheck-get"),
   autocheckSave: (c) => ipcRenderer.invoke("autocheck-save", c),
 
+  // AI urgency triage toggle
+  aiUrgencyGet: () => ipcRenderer.invoke("ai-urgency-get"),
+  aiUrgencySet: (on) => ipcRenderer.invoke("ai-urgency-set", on),
+
   // Updates
   checkUpdate: () => ipcRenderer.invoke("check-update"),
   getVersion:  () => ipcRenderer.invoke("get-version"),

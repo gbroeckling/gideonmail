@@ -912,9 +912,12 @@ async function autoTriageNewMail(messages) {
   }
 
   // ── AI triage for importance ──────────────────────────────────────────
-  // Only triage emails NOT already handled by VIP/Watch/Conversation alerts
+  // DISABLED BY DEFAULT — opt-in via Rules → Security → "AI urgency triage for unknown senders"
+  // When enabled, only texts for emails the AI thinks are truly urgent.
+  // Without this, ONLY VIP, Watch, and Conversation alerts send SMS.
+  const aiTriageEnabled = store.get("ai_urgency_triage_enabled") === true;
   const apiKey = store.get("anthropic_api_key");
-  if (!apiKey || !smsTo) { _setLastCheckTime(); return; }
+  if (!aiTriageEnabled || !apiKey || !smsTo) { _setLastCheckTime(); return; }
 
   const alreadySentUids = _getSmsSentUids();
   const untriaged = smsEligible.filter((m) => !alreadySentUids.has(m.uid));
@@ -1796,6 +1799,15 @@ ipcMain.handle("bayesian-train", (_, text, isSpam) => {
 // ── Auto-check interval ─────────────────────────────────────────────────
 ipcMain.handle("autocheck-get", () => {
   return { intervalMin: store.get("auto_check_interval_min") || 120 };
+});
+
+ipcMain.handle("ai-urgency-get", () => {
+  return { enabled: store.get("ai_urgency_triage_enabled") === true };
+});
+
+ipcMain.handle("ai-urgency-set", (_, enabled) => {
+  store.set("ai_urgency_triage_enabled", enabled);
+  return { ok: true };
 });
 
 ipcMain.handle("autocheck-save", (_, cfg) => {

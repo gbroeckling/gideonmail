@@ -1244,6 +1244,10 @@ async function openRules() {
   $("#sfKeySb").value = apiKeys.safebrowsing || "";
   $("#sfKeyAbuse").value = apiKeys.abuseipdb || "";
 
+  // AI urgency triage
+  const aiUrg = await gideon.aiUrgencyGet();
+  $("#sfAiUrgency").checked = aiUrg.enabled;
+
   // Auto-check interval
   const ac = await gideon.autocheckGet();
   $("#sfAutoCheckInterval").value = String(ac.intervalMin || 120);
@@ -1286,6 +1290,7 @@ async function saveRulesSettings() {
   await gideon.autocheckSave({
     intervalMin: parseInt($("#sfAutoCheckInterval").value) || 120,
   });
+  await gideon.aiUrgencySet($("#sfAiUrgency").checked);
   await gideon.securityApiKeysSave({
     virustotal: $("#sfKeyVt").value.trim(),
     safebrowsing: $("#sfKeySb").value.trim(),
