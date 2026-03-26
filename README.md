@@ -6,6 +6,10 @@ GideonMail is a focused, privacy-first email client built for people who run the
 
 No cloud sync. No telemetry. No account linking. Everything runs locally.
 
+![Feature Overview](docs/screenshots/feature-overview.svg)
+
+### [Download for Windows](https://github.com/gbroeckling/gideonmail/releases/latest) | [Mac: clone + npm start](#quick-start)
+
 ---
 
 ## Why GideonMail?

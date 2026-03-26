@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" font-family="Inter, -apple-system, sans-serif">
+  <rect width="900" height="500" rx="12" fill="#111113"/>
+
+  <!-- Title -->
+  <text x="450" y="40" text-anchor="middle" fill="#e4e4e8" font-size="22" font-weight="800">GideonMail — Feature Overview</text>
+
+  <!-- Row 1 -->
+  <rect x="20" y="65" width="270" height="120" rx="8" fill="#1a1a1f" stroke="#7c6cff33" stroke-width="1"/>
+  <text x="155" y="90" text-anchor="middle" fill="#7c6cff" font-size="13" font-weight="700">AI Assistant</text>
+  <text x="155" y="110" text-anchor="middle" fill="#8b8b96" font-size="10">Triage inbox in one click</text>
+  <text x="155" y="125" text-anchor="middle" fill="#8b8b96" font-size="10">Analyze, draft replies, delete</text>
+  <text x="155" y="140" text-anchor="middle" fill="#8b8b96" font-size="10">Standing instructions</text>
+  <text x="155" y="155" text-anchor="middle" fill="#8b8b96" font-size="10">Search &amp; bulk actions</text>
+  <text x="155" y="175" text-anchor="middle" fill="#4ade80" font-size="9">Powered by Claude</text>
+
+  <rect x="310" y="65" width="270" height="120" rx="8" fill="#1a1a1f" stroke="#ff9f4333" stroke-width="1"/>
+  <text x="445" y="90" text-anchor="middle" fill="#ff9f43" font-size="13" font-weight="700">Smart Sender Lists</text>
+  <text x="445" y="110" text-anchor="middle" fill="#8b8b96" font-size="10">VIP — always texts you</text>
+  <text x="445" y="125" text-anchor="middle" fill="#8b8b96" font-size="10">Watch — AI analyzes + actions</text>
+  <text x="445" y="140" text-anchor="middle" fill="#8b8b96" font-size="10">Blocked — auto-deleted in 7 days</text>
+  <text x="445" y="155" text-anchor="middle" fill="#8b8b96" font-size="10">Muted — no notifications</text>
+  <text x="445" y="175" text-anchor="middle" fill="#4ade80" font-size="9">One list, inline role changes</text>
+
+  <rect x="600" y="65" width="280" height="120" rx="8" fill="#1a1a1f" stroke="#f0606033" stroke-width="1"/>
+  <text x="740" y="90" text-anchor="middle" fill="#f06060" font-size="13" font-weight="700">8 Security Filters</text>
+  <text x="740" y="110" text-anchor="middle" fill="#8b8b96" font-size="10">SpamAssassin • Spamhaus</text>
+  <text x="740" y="125" text-anchor="middle" fill="#8b8b96" font-size="10">VirusTotal • Safe Browsing</text>
+  <text x="740" y="140" text-anchor="middle" fill="#8b8b96" font-size="10">PhishTank • AbuseIPDB</text>
+  <text x="740" y="155" text-anchor="middle" fill="#8b8b96" font-size="10">ClamAV • Bayesian learning</text>
+  <text x="740" y="175" text-anchor="middle" fill="#4ade80" font-size="9">All free tiers available</text>
+
+  <!-- Row 2 -->
+  <rect x="20" y="205" width="270" height="120" rx="8" fill="#1a1a1f" stroke="#4ade8033" stroke-width="1"/>
+  <text x="155" y="230" text-anchor="middle" fill="#4ade80" font-size="13" font-weight="700">SMS + Email Alerts</text>
+  <text x="155" y="250" text-anchor="middle" fill="#8b8b96" font-size="10">VIP sender notifications</text>
+  <text x="155" y="265" text-anchor="middle" fill="#8b8b96" font-size="10">Meeting detection</text>
+  <text x="155" y="280" text-anchor="middle" fill="#8b8b96" font-size="10">Deadline alerts [DUE date]</text>
+  <text x="155" y="295" text-anchor="middle" fill="#8b8b96" font-size="10">Quiet hours + rate limits</text>
+  <text x="155" y="315" text-anchor="middle" fill="#4ade80" font-size="9">Morning briefing at 7am</text>
+
+  <rect x="310" y="205" width="270" height="120" rx="8" fill="#1a1a1f" stroke="#38bdf833" stroke-width="1"/>
+  <text x="445" y="230" text-anchor="middle" fill="#38bdf8" font-size="13" font-weight="700">Google Calendar</text>
+  <text x="445" y="250" text-anchor="middle" fill="#8b8b96" font-size="10">Create events from emails</text>
+  <text x="445" y="265" text-anchor="middle" fill="#8b8b96" font-size="10">Visual day timeline</text>
+  <text x="445" y="280" text-anchor="middle" fill="#8b8b96" font-size="10">Conflict detection + move events</text>
+  <text x="445" y="295" text-anchor="middle" fill="#8b8b96" font-size="10">Auto-calendar from Watch senders</text>
+  <text x="445" y="315" text-anchor="middle" fill="#4ade80" font-size="9">Permanent OAuth — never expires</text>
+
+  <rect x="600" y="205" width="280" height="120" rx="8" fill="#1a1a1f" stroke="#a78bfa33" stroke-width="1"/>
+  <text x="740" y="230" text-anchor="middle" fill="#a78bfa" font-size="13" font-weight="700">Frictionless Automation</text>
+  <text x="740" y="250" text-anchor="middle" fill="#8b8b96" font-size="10">Do Later — one click to schedule</text>
+  <text x="740" y="265" text-anchor="middle" fill="#8b8b96" font-size="10">Auto-task from Watch senders</text>
+  <text x="740" y="280" text-anchor="middle" fill="#8b8b96" font-size="10">Deadline detection in every email</text>
+  <text x="740" y="295" text-anchor="middle" fill="#8b8b96" font-size="10">Meeting → calendar pipeline</text>
+  <text x="740" y="315" text-anchor="middle" fill="#4ade80" font-size="9">Zero to one click for everything</text>
+
+  <!-- Row 3 -->
+  <rect x="20" y="345" width="420" height="100" rx="8" fill="#1a1a1f" stroke="#22222833" stroke-width="1"/>
+  <text x="230" y="370" text-anchor="middle" fill="#e4e4e8" font-size="13" font-weight="700">Desktop Integration</text>
+  <text x="230" y="395" text-anchor="middle" fill="#8b8b96" font-size="10">System tray • Start on login • Single instance • Windows notifications</text>
+  <text x="230" y="415" text-anchor="middle" fill="#8b8b96" font-size="10">Drag-and-drop to folders • Dark theme • Update checker • Setup wizard</text>
+  <text x="230" y="435" text-anchor="middle" fill="#4ade80" font-size="9">Works on Windows and Mac</text>
+
+  <rect x="460" y="345" width="420" height="100" rx="8" fill="#1a1a1f" stroke="#22222833" stroke-width="1"/>
+  <text x="670" y="370" text-anchor="middle" fill="#e4e4e8" font-size="13" font-weight="700">Coming Soon</text>
+  <text x="670" y="395" text-anchor="middle" fill="#8b8b96" font-size="10">Slack • Discord • Telegram • Teams • Signal • WhatsApp alerts</text>
+  <text x="670" y="415" text-anchor="middle" fill="#8b8b96" font-size="10">Relegate — background service version (June 2026)</text>
+  <text x="670" y="435" text-anchor="middle" fill="#ff9f43" font-size="9">github.com/gbroeckling/relegate</text>
+
+  <!-- Footer -->
+  <text x="450" y="480" text-anchor="middle" fill="#55555e" font-size="10">github.com/gbroeckling/gideonmail • MIT License • Built by Garry Broeckling</text>
+</svg>
