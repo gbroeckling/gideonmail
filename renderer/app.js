@@ -1664,18 +1664,7 @@ async function addInstruction(text) {
 }
 
 function bindAIEvents() {
-  $("#btnAI").addEventListener("click", async () => {
-    toggleAI();
-    // Auto-show instructions if there are any
-    const list = await gideon.instructionsGet();
-    if (list.length > 0 && !instrVisible) {
-      instrVisible = true;
-      $("#aiInstrList").style.display = "block";
-      $("#aiInstrAdd").style.display = "block";
-      $("#aiInstrToggle").textContent = "Hide";
-    }
-    renderInstructions();
-  });
+  $("#btnAI").addEventListener("click", () => { toggleAI(); renderInstructions(); });
   $("#aiClose").addEventListener("click", toggleAI);
   $("#aiTriage").addEventListener("click", aiTriageInbox);
   $("#aiAnalyze").addEventListener("click", aiAnalyzeCurrent);
@@ -1690,7 +1679,7 @@ function bindAIEvents() {
     instrVisible = !instrVisible;
     $("#aiInstrList").style.display = instrVisible ? "block" : "none";
     $("#aiInstrAdd").style.display = instrVisible ? "block" : "none";
-    $("#aiInstrToggle").textContent = instrVisible ? "Hide" : "Show";
+    $("#aiInstrToggle").querySelector("span").textContent = instrVisible ? "Hide Standing Instructions" : "Show Standing Instructions";
     if (instrVisible) renderInstructions();
   });
   $("#aiInstrInput").addEventListener("keydown", (e) => {
