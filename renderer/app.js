@@ -1778,23 +1778,65 @@ async function aiTriageInbox() {
 
   const bulkActions = [
     { label: "Delete all LOW", action: async () => {
-      // Parse triage results to find LOW/SKIP emails
+      // Match triage line numbers back to actual emails
       const triageText = result.text || "";
-      const skipLines = triageText.split("\n").filter((l) => l.toUpperCase().includes("SKIP") || l.toUpperCase().includes("LOW"));
-      if (!skipLines.length) { addAIMessage("No LOW/SKIP emails found in triage.", "system"); return; }
-      if (!confirm(`Delete ${skipLines.length} low-priority emails?`)) return;
-      addAIMessage(`Deleting ${skipLines.length} low-priority emails...`, "system");
-      await gideon.aiChat(`Delete all emails that were marked SKIP or LOW in the triage you just did. Here are the ones to delete:\n${skipLines.join("\n")}`, null);
-      addAIMessage("Done. Refresh your inbox.", "system");
-      loadMessages();
+      const lines = triageText.split("\n").filter((l) => l.trim());
+      const deleteUids = [];
+      const deleteNames = [];
+      for (const line of lines) {
+        if (!line.toUpperCase().includes("SKIP") && !line.toUpperCase().includes("LOW")) continue;
+        // Extract the line number [#] to match to email index
+        const numMatch = line.match(/^\[?#?(\d+)\]?/);
+        if (numMatch) {
+          const idx = parseInt(numMatch[1]) - 1;
+          if (idx >= 0 && idx < currentMessages.length) {
+            deleteUids.push(currentMessages[idx].uid);
+            deleteNames.push(`${currentMessages[idx].from?.name || currentMessages[idx].from?.address}: ${currentMessages[idx].subject}`);
+          }
+        }
+      }
+      if (!deleteUids.length) {
+        // Fallback: if no line numbers parsed, try matching by subject keywords
+        for (const line of lines) {
+          if (!line.toUpperCase().includes("SKIP") && !line.toUpperCase().includes("LOW")) continue;
+          for (const m of currentMessages) {
+            const subj = (m.subject || "").toLowerCase();
+            const from = (m.from?.name || m.from?.address || "").toLowerCase();
+            if ((line.toLowerCase().includes(subj.substring(0, 20)) || line.toLowerCase().includes(from.substring(0, 15))) && !deleteUids.includes(m.uid)) {
+              deleteUids.push(m.uid);
+              deleteNames.push(`${m.from?.name || m.from?.address}: ${m.subject}`);
+            }
+          }
+        }
+      }
+      if (!deleteUids.length) { addAIMessage("Couldn't match any emails to delete.", "error"); return; }
+      if (!confirm(`Delete ${deleteUids.length} emails?\n\n${deleteNames.slice(0, 5).join("\n")}${deleteUids.length > 5 ? `\n...and ${deleteUids.length - 5} more` : ""}`)) return;
+      addAIMessage(`Deleting ${deleteUids.length} emails...`, "system");
+      for (const uid of deleteUids) {
+        try { await gideon.deleteMessage(uid); } catch (e) {}
+      }
+      addAIMessage(`Deleted ${deleteUids.length} emails.`, "system");
+      await loadMessages();
     }},
     { label: "Star all URGENT", action: async () => {
       const triageText = result.text || "";
-      const urgentLines = triageText.split("\n").filter((l) => l.toUpperCase().includes("URGENT"));
-      if (!urgentLines.length) { addAIMessage("No URGENT emails found.", "system"); return; }
-      addAIMessage(`Starring ${urgentLines.length} urgent emails...`, "system");
-      await gideon.aiChat(`Star/flag all emails that were marked URGENT in the triage. Here they are:\n${urgentLines.join("\n")}`, null);
-      addAIMessage("Done.", "system");
+      const lines = triageText.split("\n").filter((l) => l.trim());
+      const starUids = [];
+      for (const line of lines) {
+        if (!line.toUpperCase().includes("URGENT")) continue;
+        const numMatch = line.match(/^\[?#?(\d+)\]?/);
+        if (numMatch) {
+          const idx = parseInt(numMatch[1]) - 1;
+          if (idx >= 0 && idx < currentMessages.length) starUids.push(currentMessages[idx].uid);
+        }
+      }
+      if (!starUids.length) { addAIMessage("Couldn't match any urgent emails.", "error"); return; }
+      addAIMessage(`Starring ${starUids.length} emails...`, "system");
+      for (const uid of starUids) {
+        try { await gideon.toggleFlag(uid, "flagged"); } catch (e) {}
+      }
+      addAIMessage(`Starred ${starUids.length} emails.`, "system");
+      await loadMessages();
     }},
     { label: "Ask AI to act", action: () => { $("#aiInput").value = "Based on the triage, "; $("#aiInput").focus(); } },
   ];
