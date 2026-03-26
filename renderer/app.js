@@ -264,8 +264,136 @@ function bindEvents() {
       addAIMessage(`Event created! ${result.link || ""}`, "system");
     } else {
       addAIMessage("Failed: " + result.error, "error");
+      taskInProgress = false;
+      return;
     }
-    taskInProgress = false;
+
+    // Post-creation: offer to send a meeting reply to the sender
+    const replyOpts = document.createElement("div");
+    replyOpts.className = "ai-msg assistant";
+    replyOpts.style.padding = "10px 12px";
+
+    const replyHeader = document.createElement("div");
+    replyHeader.style.cssText = "font-size:11px;font-weight:600;color:var(--accent);margin-bottom:8px";
+    replyHeader.textContent = "Send a meeting confirmation to the sender?";
+    replyOpts.appendChild(replyHeader);
+
+    // Meeting type
+    const typeRow = document.createElement("div");
+    typeRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:11px;color:var(--fg2)";
+    typeRow.innerHTML = '<span>Type:</span>';
+    const typeSel = document.createElement("select");
+    typeSel.style.cssText = "padding:3px 6px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:11px";
+    for (const [val, label] of [["inperson","In-person"],["teams","Microsoft Teams"],["meet","Google Meet"],["zoom","Zoom"],["phone","Phone call"]]) {
+      const o = document.createElement("option"); o.value = val; o.textContent = label; typeSel.appendChild(o);
+    }
+    typeRow.appendChild(typeSel);
+    replyOpts.appendChild(typeRow);
+
+    // Action buttons
+    const replyActions = document.createElement("div");
+    replyActions.style.cssText = "display:flex;gap:6px;margin-top:6px";
+
+    const sendReplyBtn = document.createElement("button");
+    sendReplyBtn.style.cssText = "padding:4px 12px;background:#1a3a0a;border:1px solid #4ade80;color:#86efac;border-radius:4px;cursor:pointer;font-size:11px";
+    sendReplyBtn.textContent = "Generate & Send Reply";
+    sendReplyBtn.addEventListener("click", async () => {
+      sendReplyBtn.disabled = true;
+      sendReplyBtn.textContent = "Generating...";
+
+      const meetingType = typeSel.value;
+      const locationText = event.fullAddress || event.location || "";
+      const mapsLink = event.mapsLink || "";
+
+      // AI generates the reply
+      const aiReply = await gideon.aiChat(
+        `Write a professional meeting confirmation reply to ${currentMsg.from?.name || currentMsg.from?.address}.
+Meeting details:
+- Title: ${event.title}
+- Date: ${event.date}
+- Time: ${event.startTime} – ${event.endTime}
+- Type: ${meetingType === "inperson" ? "In-person meeting" : meetingType === "teams" ? "Microsoft Teams video call" : meetingType === "meet" ? "Google Meet video call" : meetingType === "zoom" ? "Zoom video call" : "Phone call"}
+${locationText ? "- Location: " + locationText : ""}
+${mapsLink ? "- Google Maps: " + mapsLink : ""}
+
+${locationText ? "Include a brief, helpful description of the location (e.g., parking tips, nearby landmarks, which entrance to use — be creative and helpful based on the type of venue)." : ""}
+${meetingType !== "inperson" && meetingType !== "phone" ? "Mention that a meeting link will be included in the calendar invite." : ""}
+
+Keep it concise and warm. Sign off as ${(await gideon.getAccount())?.displayName || "me"}.
+Only output the reply body, no subject line.`,
+        null
+      );
+
+      if (aiReply.error) {
+        addAIMessage("Error generating reply: " + aiReply.error, "error");
+        sendReplyBtn.textContent = "Generate & Send Reply";
+        sendReplyBtn.disabled = false;
+        return;
+      }
+
+      // Show preview
+      replyOpts.remove();
+      addAIMessage("Reply preview:", "system");
+      addAIMessage(aiReply.text, "assistant");
+
+      // Confirm/edit/cancel
+      const confirmRow = document.createElement("div");
+      confirmRow.className = "ai-msg system";
+      confirmRow.style.cssText = "display:flex;gap:6px";
+
+      const confirmSend = document.createElement("button");
+      confirmSend.style.cssText = "padding:4px 12px;background:#1a3a0a;border:1px solid #4ade80;color:#86efac;border-radius:4px;cursor:pointer;font-size:11px";
+      confirmSend.textContent = "Send Reply";
+      confirmSend.addEventListener("click", async () => {
+        confirmSend.disabled = true;
+        confirmSend.textContent = "Sending...";
+
+        const sendResult = await gideon.sendMail({
+          to: currentMsg.from?.address,
+          subject: currentMsg.subject?.startsWith("Re:") ? currentMsg.subject : `Re: ${currentMsg.subject}`,
+          html: aiReply.text.replace(/\n/g, "<br>"),
+          text: aiReply.text,
+          inReplyTo: currentMsg.messageId,
+        });
+
+        if (sendResult.ok) {
+          addAIMessage("Reply sent!", "system");
+
+          // If Teams selected, text the user the meeting link
+          if (meetingType === "teams" && result.link) {
+            try {
+              await gideon.sendMail({ to: (await gideon.getAccount())?.email, subject: "Teams Meeting Link", text: `Teams meeting for: ${event.title}\n${result.link}` });
+            } catch (e) {}
+            addAIMessage("Teams meeting link sent to your email.", "system");
+          }
+        } else {
+          addAIMessage("Send failed: " + (sendResult.error || ""), "error");
+        }
+        confirmRow.remove();
+        taskInProgress = false;
+      });
+
+      const skipSend = document.createElement("button");
+      skipSend.style.cssText = "padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px";
+      skipSend.textContent = "Skip — don't send";
+      skipSend.addEventListener("click", () => { confirmRow.remove(); taskInProgress = false; addAIMessage("Reply skipped.", "system"); });
+
+      confirmRow.appendChild(confirmSend);
+      confirmRow.appendChild(skipSend);
+      $("#aiMessages").appendChild(confirmRow);
+      $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
+    });
+
+    const noReplyBtn = document.createElement("button");
+    noReplyBtn.style.cssText = "padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px";
+    noReplyBtn.textContent = "No reply needed";
+    noReplyBtn.addEventListener("click", () => { replyOpts.remove(); taskInProgress = false; });
+
+    replyActions.appendChild(sendReplyBtn);
+    replyActions.appendChild(noReplyBtn);
+    replyOpts.appendChild(replyActions);
+    $("#aiMessages").appendChild(replyOpts);
+    $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
   });
 
   $("#btnAddToList").addEventListener("change", async (e) => {
