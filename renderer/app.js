@@ -90,8 +90,11 @@ function bindEvents() {
   });
 
   // ── Create Task (Calendar) ──────────────────────────────────────────────
+  let taskInProgress = false;
   $("#btnTask").addEventListener("click", async () => {
     if (!currentMsg) return;
+    if (taskInProgress) { addAIMessage("A task is already being created. Wait for it to finish.", "system"); return; }
+    taskInProgress = true;
 
     // Open AI panel and show progress there
     if (!aiOpen) toggleAI();
@@ -101,6 +104,7 @@ function bindEvents() {
     const extracted = await gideon.aiExtractEvent(currentMsg);
     if (extracted.error) {
       addAIMessage("Error extracting event: " + extracted.error, "error");
+      taskInProgress = false;
       return;
     }
     const event = extracted.event;
@@ -247,7 +251,7 @@ function bindEvents() {
     // Step 4: Interactive time picker
     addAIMessage("Choose your time — click the timeline, change date, or adjust duration:", "system");
     const chosen = await showTimePicker(event, dayEvents.ok ? dayEvents.events : []);
-    if (!chosen) { addAIMessage("Cancelled.", "system"); return; }
+    if (!chosen) { addAIMessage("Cancelled.", "system"); taskInProgress = false; return; }
 
     // Update event with chosen time
     event.date = chosen.date;
@@ -261,6 +265,7 @@ function bindEvents() {
     } else {
       addAIMessage("Failed: " + result.error, "error");
     }
+    taskInProgress = false;
   });
 
   $("#btnAddToList").addEventListener("change", async (e) => {
