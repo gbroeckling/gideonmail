@@ -114,6 +114,7 @@ contextBridge.exposeInMainWorld("gideon", {
   // Calendar
   aiExtractEvent:    (email)  => ipcRenderer.invoke("ai-extract-event", email),
   gcalCreateEvent:   (event)  => ipcRenderer.invoke("gcal-create-event", event),
+  gcalMoveEvent:     (id, s, e) => ipcRenderer.invoke("gcal-move-event", id, s, e),
   gcalGetDay:        (date)   => ipcRenderer.invoke("gcal-get-day", date),
   gcalCheckConflicts:(event)  => ipcRenderer.invoke("gcal-check-conflicts", event),
   gcalStatus:        ()       => ipcRenderer.invoke("gcal-status"),

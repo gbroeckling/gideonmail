@@ -2320,6 +2320,51 @@ If dates/times are relative (e.g. "next Tuesday", "tomorrow at 3pm"), convert to
 });
 
 // ── Google Calendar ─────────────────────────────────────────────────────
+// Move/reschedule an existing Google Calendar event
+ipcMain.handle("gcal-move-event", async (_, eventId, newStart, newEnd) => {
+  try {
+    const token = await googleAuth.getToken();
+    const calId = store.get("google_calendar_id") || "primary";
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    const body = JSON.stringify({
+      start: { dateTime: newStart, timeZone: timezone },
+      end: { dateTime: newEnd, timeZone: timezone },
+    });
+
+    const https = require("https");
+    const res = await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: "www.googleapis.com",
+        path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events/${encodeURIComponent(eventId)}?sendUpdates=none`,
+        method: "PATCH",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
+      }, (r) => {
+        let data = "";
+        r.on("data", (d) => { data += d; });
+        r.on("end", () => {
+          try { resolve({ status: r.statusCode, data: JSON.parse(data) }); }
+          catch (e) { resolve({ status: r.statusCode, data }); }
+        });
+      });
+      req.on("error", reject);
+      req.write(body);
+      req.end();
+    });
+
+    if (res.status === 200) {
+      return { ok: true, event: res.data };
+    }
+    return { error: `API error ${res.status}: ${JSON.stringify(res.data.error?.message || res.data)}` };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
 ipcMain.handle("gcal-create-event", async (_, event) => {
   try {
     const calId = store.get("google_calendar_id") || "primary";

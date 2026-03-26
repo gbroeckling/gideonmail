@@ -1818,7 +1818,8 @@ function showTimePicker(event, existingEvents) {
         timeline.appendChild(label);
       }
 
-      // Existing events as blocks
+      // Existing events as blocks (with move option on conflicts)
+      const conflictingEvents = [];
       for (const ev of dayEvents) {
         const es = ev.start ? new Date(ev.start) : null;
         const ee = ev.end ? new Date(ev.end) : null;
@@ -1826,11 +1827,18 @@ function showTimePicker(event, existingEvents) {
         const startMin = es.getHours() * 60 + es.getMinutes() - 8 * 60;
         const endMin = ee.getHours() * 60 + ee.getMinutes() - 8 * 60;
         if (startMin < 0 && endMin < 0) continue;
+
+        // Check if this event conflicts with proposed
+        const esHM = `${String(es.getHours()).padStart(2,"0")}:${String(es.getMinutes()).padStart(2,"0")}`;
+        const eeHM = `${String(ee.getHours()).padStart(2,"0")}:${String(ee.getMinutes()).padStart(2,"0")}`;
+        const isConflict = selStart < eeHM && endTime > esHM;
+        if (isConflict) conflictingEvents.push(ev);
+
         const top = Math.max(0, startMin / totalMin * 100);
         const height = Math.max(1, (Math.min(endMin, totalMin) - Math.max(startMin, 0)) / totalMin * 100);
         const block = document.createElement("div");
-        block.style.cssText = `position:absolute;left:42px;right:6px;top:${top}%;height:${height}%;background:#2a2a32;border-radius:3px;padding:1px 4px;overflow:hidden;border-left:2px solid #64748b`;
-        block.innerHTML = `<div style="font-size:9px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(ev.title)}</div>`;
+        block.style.cssText = `position:absolute;left:42px;right:6px;top:${top}%;height:${height}%;background:${isConflict ? "#2a1a1a" : "#2a2a32"};border-radius:3px;padding:1px 4px;overflow:hidden;border-left:2px solid ${isConflict ? "#ef4444" : "#64748b"};z-index:1`;
+        block.innerHTML = `<div style="font-size:9px;color:${isConflict ? "#fca5a5" : "var(--fg2)"};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(ev.title)}${isConflict ? " ⚠" : ""}</div>`;
         timeline.appendChild(block);
       }
 
@@ -1896,12 +1904,58 @@ function showTimePicker(event, existingEvents) {
       controls.appendChild(durUp);
       picker.appendChild(controls);
 
-      // Conflict warning
-      if (conflict) {
+      // Conflict warning + move options
+      if (conflict && conflictingEvents.length > 0) {
+        const warnBox = document.createElement("div");
+        warnBox.style.cssText = "background:#1a0a0a;border:1px solid #f0606033;border-radius:4px;padding:6px 8px;margin-bottom:6px";
+
         const warn = document.createElement("div");
-        warn.style.cssText = "font-size:10px;color:#ef4444;font-weight:600;margin-bottom:6px";
-        warn.textContent = "⚠ Time conflict — click the timeline or change the time above";
-        picker.appendChild(warn);
+        warn.style.cssText = "font-size:10px;color:#ef4444;font-weight:600;margin-bottom:4px";
+        warn.textContent = `⚠ ${conflictingEvents.length} conflict${conflictingEvents.length > 1 ? "s" : ""} — adjust your time, or move the existing event:`;
+        warnBox.appendChild(warn);
+
+        for (const ce of conflictingEvents) {
+          const ceRow = document.createElement("div");
+          ceRow.style.cssText = "display:flex;align-items:center;gap:6px;padding:2px 0;font-size:10px";
+
+          const ceLabel = document.createElement("span");
+          ceLabel.style.cssText = "flex:1;color:#fca5a5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+          const ceStart = ce.start ? new Date(ce.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "?";
+          const ceEnd = ce.end ? new Date(ce.end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "?";
+          ceLabel.textContent = `${ceStart}–${ceEnd}: ${ce.title}`;
+
+          const moveBtn = document.createElement("button");
+          moveBtn.style.cssText = "padding:2px 8px;background:var(--bg2);border:1px solid var(--bg3);color:var(--accent);border-radius:3px;cursor:pointer;font-size:9px;white-space:nowrap";
+          moveBtn.textContent = "Move this →";
+          moveBtn.addEventListener("click", async () => {
+            if (!ce.id) { addAIMessage("Can't move — no event ID", "error"); return; }
+            // Calculate: push the conflicting event to right after the proposed event
+            const newStartStr = `${selDate}T${calcEndTime()}:00`;
+            const ceDuration = ce.end && ce.start ? new Date(ce.end).getTime() - new Date(ce.start).getTime() : 3600000;
+            const newEndDate = new Date(new Date(newStartStr).getTime() + ceDuration);
+            const newEndStr = newEndDate.toISOString();
+
+            moveBtn.textContent = "Moving...";
+            moveBtn.disabled = true;
+            const r = await gideon.gcalMoveEvent(ce.id, newStartStr, newEndStr);
+            if (r.ok) {
+              moveBtn.textContent = "Moved!";
+              moveBtn.style.color = "#4ade80";
+              // Reload the day to show updated layout
+              await loadDay();
+            } else {
+              moveBtn.textContent = "Failed";
+              moveBtn.style.color = "#ef4444";
+              setTimeout(() => { moveBtn.textContent = "Move this →"; moveBtn.disabled = false; moveBtn.style.color = "var(--accent)"; }, 2000);
+            }
+          });
+
+          ceRow.appendChild(ceLabel);
+          ceRow.appendChild(moveBtn);
+          warnBox.appendChild(ceRow);
+        }
+
+        picker.appendChild(warnBox);
       }
 
       // Action buttons
