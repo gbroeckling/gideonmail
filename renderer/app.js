@@ -100,7 +100,7 @@ function bindEvents() {
     if (!aiOpen) toggleAI();
     addAIMessage("Creating calendar event from this email...", "system");
 
-    // Step 1: AI extracts event details
+    // Step 1: AI extracts event details + checks if reschedule
     const extracted = await gideon.aiExtractEvent(currentMsg);
     if (extracted.error) {
       addAIMessage("Error extracting event: " + extracted.error, "error");
@@ -108,6 +108,114 @@ function bindEvents() {
       return;
     }
     const event = extracted.event;
+
+    // Step 1.5: Check if this looks like a reschedule
+    let isReschedule = false;
+    let existingEventId = null;
+    let existingEventTitle = null;
+    try {
+      const client2 = await gideon.aiChat(
+        `Does this email look like a reschedule, change, or update to an existing meeting? Look for words like "reschedule", "moved", "changed", "new time", "updated", "postponed", "pushed back", etc.
+Reply with ONLY valid JSON: {"reschedule": true/false, "originalTitle": "title of the original meeting if detectable, or empty string"}
+
+Email from: ${currentMsg.from?.name || currentMsg.from?.address}
+Subject: ${currentMsg.subject}`,
+        null
+      );
+      try {
+        const parsed = JSON.parse((client2.text || "").match(/\{[\s\S]*\}/)?.[0] || "{}");
+        isReschedule = !!parsed.reschedule;
+        if (isReschedule && parsed.originalTitle) existingEventTitle = parsed.originalTitle;
+      } catch (e) {}
+    } catch (e) {}
+
+    // If reschedule, try to find the original event on the calendar
+    if (isReschedule) {
+      addAIMessage("This looks like a reschedule. Searching your calendar for the original meeting...", "system");
+
+      // Search nearby dates for the matching event
+      try {
+        const searchDate = event.date || new Date().toISOString().split("T")[0];
+        // Look 7 days before and after
+        for (let offset = -7; offset <= 7; offset++) {
+          const d = new Date(new Date(searchDate + "T12:00:00").getTime() + offset * 86400000);
+          const dayStr = d.toISOString().split("T")[0];
+          const dayResult = await gideon.gcalGetDay(dayStr);
+          if (dayResult.ok && dayResult.events) {
+            for (const ev of dayResult.events) {
+              const titleMatch = ev.title.toLowerCase().includes((existingEventTitle || event.title).toLowerCase().substring(0, 15)) ||
+                (existingEventTitle && ev.title.toLowerCase().includes(existingEventTitle.toLowerCase().substring(0, 15)));
+              const senderMatch = ev.description?.toLowerCase().includes((currentMsg.from?.address || "").toLowerCase()) ||
+                ev.title.toLowerCase().includes((currentMsg.from?.name || "").toLowerCase().substring(0, 8));
+              if (titleMatch || senderMatch) {
+                existingEventId = ev.id;
+                existingEventTitle = ev.title;
+                const evStart = ev.start ? new Date(ev.start).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "?";
+                addAIMessage(`Found: "${ev.title}" on ${evStart}`, "system");
+                break;
+              }
+            }
+          }
+          if (existingEventId) break;
+        }
+      } catch (e) {}
+
+      if (existingEventId) {
+        // Ask user: reschedule or create new?
+        const reschedDiv = document.createElement("div");
+        reschedDiv.className = "ai-msg system";
+        reschedDiv.style.cssText = "display:flex;gap:6px;flex-wrap:wrap";
+
+        const moveBtn = document.createElement("button");
+        moveBtn.style.cssText = "padding:4px 12px;background:#92400e;border:1px solid #f59e0b;color:#fef3c7;border-radius:4px;cursor:pointer;font-size:11px";
+        moveBtn.textContent = `Move "${existingEventTitle}" to new time`;
+        moveBtn.addEventListener("click", async () => {
+          reschedDiv.remove();
+          addAIMessage("Choose the new time:", "system");
+          const newTime = await showTimePicker(event, []);
+          if (!newTime) { addAIMessage("Cancelled.", "system"); taskInProgress = false; return; }
+
+          const newStart = `${newTime.date}T${newTime.startTime}:00`;
+          const newEnd = `${newTime.date}T${newTime.endTime}:00`;
+          const moveResult = await gideon.gcalMoveEvent(existingEventId, newStart, newEnd);
+          if (moveResult.ok) {
+            addAIMessage(`Rescheduled "${existingEventTitle}" to ${newTime.date} ${newTime.startTime}–${newTime.endTime}`, "system");
+          } else {
+            addAIMessage("Failed to move: " + (moveResult.error || ""), "error");
+          }
+          taskInProgress = false;
+        });
+
+        const newBtn = document.createElement("button");
+        newBtn.style.cssText = "padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px";
+        newBtn.textContent = "Create new event instead";
+        newBtn.addEventListener("click", () => { reschedDiv.remove(); /* fall through to normal flow below */ });
+
+        const cancelBtn = document.createElement("button");
+        cancelBtn.style.cssText = "padding:4px 12px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:4px;cursor:pointer;font-size:11px";
+        cancelBtn.textContent = "Cancel";
+        cancelBtn.addEventListener("click", () => { reschedDiv.remove(); taskInProgress = false; addAIMessage("Cancelled.", "system"); });
+
+        reschedDiv.appendChild(moveBtn);
+        reschedDiv.appendChild(newBtn);
+        reschedDiv.appendChild(cancelBtn);
+        $("#aiMessages").appendChild(reschedDiv);
+        $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
+
+        // Wait for user choice — if they click "Move", the handler takes over
+        // If they click "Create new", we continue below
+        // We need to wait... use a promise
+        const userChoice = await new Promise((resolve) => {
+          moveBtn.addEventListener("click", () => resolve("move"));
+          newBtn.addEventListener("click", () => resolve("new"));
+          cancelBtn.addEventListener("click", () => resolve("cancel"));
+        });
+        if (userChoice === "move" || userChoice === "cancel") return;
+        // "new" falls through to normal creation
+      } else {
+        addAIMessage("Couldn't find the original meeting on your calendar. Creating as a new event.", "system");
+      }
+    }
 
     // Step 2: Show extracted details
     let locationText = event.location || "(none)";
