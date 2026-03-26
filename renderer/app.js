@@ -1160,6 +1160,9 @@ async function openSettings() {
   const smsCfg = await gideon.smsGetConfig();
   $("#cfgSmsTo").value = smsCfg.smsTo || "";
   $("#cfgAlertEmail").value = smsCfg.alertEmailTo || "";
+  const actionCfg = await gideon.actionEmailGet();
+  $("#cfgActionEmail").checked = actionCfg.enabled;
+  $("#cfgActionEmailAddr").value = actionCfg.address || "";
   $("#cfgTextbeltKey").value = smsCfg.textbeltKey || "";
   $("#cfgSmsResult").textContent = "";
   const alState = await gideon.autolaunchGet();
@@ -1214,6 +1217,10 @@ async function saveSettingsQuiet() {
     smsTo: $("#cfgSmsTo").value.trim(),
     textbeltKey: $("#cfgTextbeltKey").value.trim(),
     alertEmailTo: $("#cfgAlertEmail").value.trim(),
+  });
+  await gideon.actionEmailSave({
+    enabled: $("#cfgActionEmail").checked,
+    address: $("#cfgActionEmailAddr").value.trim(),
   });
 }
 

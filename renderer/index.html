@@ -154,6 +154,11 @@
       <label>Send alerts to email<input type="email" id="cfgAlertEmail" placeholder="alerts@example.com" /></label>
       <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">Same alerts as SMS, sent as email. Leave blank to disable. Works alongside SMS — both can be active.</div>
       <hr>
+      <div style="padding:6px 20px;font-size:11px;color:var(--accent);font-weight:600">Phone Reply via Email</div>
+      <label><input type="checkbox" id="cfgActionEmail" /> Enable action emails (reply to VIP emails from your phone)</label>
+      <label>Send action emails to<input type="email" id="cfgActionEmailAddr" placeholder="your-phone@email.com (or leave blank to use alert email)" /></label>
+      <div style="padding:2px 20px;font-size:10px;color:var(--fg2)">When a VIP emails you, GideonMail sends a branded action email with Reply/Approve/Decline buttons. Reply from any phone email app — GideonMail picks up your response and sends it. Uses a separate email address so it doesn't clutter your main inbox.</div>
+      <hr>
       <div style="padding:6px 20px;font-size:11px;color:var(--warm);font-weight:600">Social Media Alerts <span style="font-size:9px;color:var(--fg2);font-weight:400">(experimental)</span></div>
       <label><input type="checkbox" id="cfgAlertSlack" disabled /> Slack webhook <span style="font-size:10px;color:var(--fg2)">— coming soon</span></label>
       <label><input type="checkbox" id="cfgAlertDiscord" disabled /> Discord webhook <span style="font-size:10px;color:var(--fg2)">— coming soon</span></label>

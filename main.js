@@ -662,6 +662,160 @@ async function sendEmailAlert(message) {
 
 // Unified alert: sends to SMS and/or email based on config
 const _originalSendSMS = sendSMS;
+// ── Action Email Relay (phone control via email) ────────────────────────
+async function sendActionEmail(originalMsg, summary, actions) {
+  const enabled = store.get("action_email_enabled") === true;
+  if (!enabled) return;
+
+  const targetEmail = store.get("action_email_address") || store.get("alert_email_to") || "";
+  if (!targetEmail) return;
+
+  const cfg = store.get("account");
+  if (!cfg) return;
+
+  const actionId = `GM-${Date.now()}-${originalMsg.uid}`;
+  const fromName = originalMsg.from?.name || originalMsg.from?.address || "Unknown";
+
+  const actionButtons = actions.map((a) =>
+    `<a href="mailto:${cfg.email || cfg.username}?subject=${encodeURIComponent(`[GIDEON-ACTION:${actionId}] ${a.command}`)}&body=${encodeURIComponent(a.command === "reply" ? "reply: " : a.command)}" style="display:inline-block;padding:8px 20px;margin:4px;background:${a.color || "#7c6cff"};color:#fff;text-decoration:none;border-radius:6px;font-weight:600;font-size:14px">${a.label}</a>`
+  ).join("\n");
+
+  const html = `
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#111113;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <div style="max-width:500px;margin:20px auto;background:#1a1a1f;border-radius:12px;overflow:hidden;border:1px solid #2a2a32">
+    <div style="background:linear-gradient(135deg,#7c6cff,#6355e0);padding:16px 24px">
+      <div style="color:#fff;font-size:18px;font-weight:700">GideonMail</div>
+      <div style="color:#e0d4ff;font-size:11px;margin-top:2px">Action Required</div>
+    </div>
+    <div style="padding:20px 24px">
+      <div style="color:#8b8b96;font-size:11px;margin-bottom:4px">From: ${fromName}</div>
+      <div style="color:#e4e4e8;font-size:16px;font-weight:600;margin-bottom:12px">${originalMsg.subject || "(no subject)"}</div>
+      <div style="color:#e4e4e8;font-size:13px;line-height:1.6;padding:12px;background:#111113;border-radius:8px;margin-bottom:16px">${summary}</div>
+      <div style="text-align:center;padding:8px 0">
+        ${actionButtons}
+      </div>
+      <div style="color:#55555e;font-size:10px;text-align:center;margin-top:16px;padding-top:12px;border-top:1px solid #2a2a32">
+        Click a button above or reply to this email with a command:<br>
+        <span style="color:#8b8b96">reply: [your message]</span> · <span style="color:#8b8b96">approve</span> · <span style="color:#8b8b96">decline</span> · <span style="color:#8b8b96">later</span> · <span style="color:#8b8b96">ignore</span>
+      </div>
+    </div>
+  </div>
+</body></html>`;
+
+  try {
+    const transport = nodemailer.createTransport({
+      host: cfg.smtpHost, port: cfg.smtpPort || 587,
+      secure: cfg.smtpSecure || false,
+      auth: { user: cfg.username, pass: cfg.password },
+      tls: { rejectUnauthorized: false },
+    });
+
+    await transport.sendMail({
+      from: `GideonMail <${cfg.email || cfg.username}>`,
+      to: targetEmail,
+      subject: `[ACTION] ${fromName}: ${originalMsg.subject || "(no subject)"}`,
+      html,
+      text: `GideonMail Action Required\n\nFrom: ${fromName}\nSubject: ${originalMsg.subject}\n\n${summary}\n\nReply with: reply: [message] | approve | decline | later | ignore`,
+      headers: { "X-GideonMail-Action-Id": actionId, "X-GideonMail-UID": String(originalMsg.uid) },
+    });
+
+    // Track sent action emails
+    const sent = store.get("action_emails_sent") || [];
+    sent.push({ actionId, uid: originalMsg.uid, from: originalMsg.from, subject: originalMsg.subject, sent: new Date().toISOString() });
+    if (sent.length > 50) sent.splice(0, sent.length - 50);
+    store.set("action_emails_sent", sent);
+
+  } catch (e) { console.error("Action email failed:", e.message); }
+}
+
+// Scan for replies to action emails and execute commands
+async function processActionReplies() {
+  const enabled = store.get("action_email_enabled") === true;
+  if (!enabled) return;
+
+  const sentActions = store.get("action_emails_sent") || [];
+  if (!sentActions.length) return;
+
+  try {
+    const client = await createFreshImapClient();
+    try {
+      const lock = await client.getMailboxLock("INBOX");
+      try {
+        // Search for replies to action emails
+        const uids = await client.search({ subject: "[GIDEON-ACTION:" }, { uid: true });
+        if (!uids.length) return;
+
+        for await (const msg of client.fetch({ uid: uids.slice(-20) }, { envelope: true, source: true })) {
+          const subject = msg.envelope?.subject || "";
+          const actionMatch = subject.match(/\[GIDEON-ACTION:([^\]]+)\]/);
+          if (!actionMatch) continue;
+
+          const actionId = actionMatch[1].trim();
+          const originalAction = sentActions.find((a) => subject.includes(a.actionId));
+          if (!originalAction) continue;
+
+          // Parse the command from the subject or body
+          let command = subject.replace(/.*\[GIDEON-ACTION:[^\]]+\]\s*/, "").trim().toLowerCase();
+
+          // Parse body for command if subject doesn't have it
+          if (!command && msg.source) {
+            const parsed = await simpleParser(msg.source);
+            const bodyText = (parsed.text || "").trim().split("\n")[0].trim().toLowerCase();
+            if (bodyText.startsWith("reply:") || ["approve", "decline", "later", "ignore"].includes(bodyText.split(/\s/)[0])) {
+              command = bodyText;
+            }
+          }
+
+          if (!command) continue;
+
+          console.log(`Action reply: ${command} for UID ${originalAction.uid}`);
+
+          // Execute the command
+          if (command.startsWith("reply:") || command.startsWith("reply ")) {
+            const replyText = command.replace(/^reply[:\s]+/, "").trim();
+            if (replyText) {
+              await sendMail({
+                to: originalAction.from?.address,
+                subject: originalAction.subject?.startsWith("Re:") ? originalAction.subject : `Re: ${originalAction.subject}`,
+                text: replyText,
+                html: replyText.replace(/\n/g, "<br>"),
+              });
+              console.log(`Action: replied to ${originalAction.from?.address}`);
+            }
+          } else if (command === "approve") {
+            await sendMail({
+              to: originalAction.from?.address,
+              subject: `Re: ${originalAction.subject}`,
+              text: "Approved.",
+              html: "Approved.",
+            });
+          } else if (command === "decline") {
+            await sendMail({
+              to: originalAction.from?.address,
+              subject: `Re: ${originalAction.subject}`,
+              text: "Thank you, but I'll have to decline.",
+              html: "Thank you, but I'll have to decline.",
+            });
+          } else if (command === "later") {
+            await autoCreateTask({ uid: originalAction.uid, subject: originalAction.subject, from: originalAction.from });
+          }
+          // "ignore" = do nothing
+
+          // Delete the action reply from inbox
+          try { await client.messageDelete(String(msg.uid), { uid: true }); } catch (e) {}
+
+          // Remove from tracking
+          const idx = sentActions.findIndex((a) => a.actionId === actionId);
+          if (idx >= 0) sentActions.splice(idx, 1);
+          store.set("action_emails_sent", sentActions);
+        }
+      } finally { lock.release(); }
+    } finally { try { await client.logout(); } catch (e) {} }
+  } catch (e) { console.error("Action reply processing failed:", e.message); }
+}
+
 async function sendAlert(message) {
   const useSms = !!store.get("sms_to");
   const useEmail = !!store.get("alert_email_to");
@@ -782,6 +936,7 @@ async function autoTriageNewMail(messages) {
 
   // Run blacklist cleanup (delete emails > 1 week old from blacklisted senders)
   cleanupBlacklistedEmails().catch((e) => console.error("Blacklist cleanup:", e.message));
+  processActionReplies().catch((e) => console.error("Action replies:", e.message));
 
   // ── Run spam filters on unknown senders BEFORE AI gets a look ─────────
   // Trusted senders (VIP, Watch, Muted) skip this. Only unknown + blocked.
@@ -1041,7 +1196,18 @@ For location: extract the full street address if available. If only a venue name
             } catch (notifErr) { console.error("Meeting notification failed:", notifErr.message); }
           }
 
-          try { await sendAlert(smsText); _addSmsSentUid(m.uid); } catch (e) { console.error("VIP SMS failed:", e.message); }
+          try {
+            await sendAlert(smsText);
+            _addSmsSentUid(m.uid);
+            // Send action email for phone-based reply
+            await sendActionEmail(m, smsText, [
+              { label: "Reply", command: "reply", color: "#7c6cff" },
+              { label: "Approve", command: "approve", color: "#4ade80" },
+              { label: "Decline", command: "decline", color: "#f06060" },
+              { label: "Later", command: "later", color: "#ff9f43" },
+              { label: "Ignore", command: "ignore", color: "#55555e" },
+            ]);
+          } catch (e) { console.error("VIP alert failed:", e.message); }
         }
       }
     }
@@ -1966,6 +2132,18 @@ ipcMain.handle("ai-urgency-set", (_, enabled) => {
 
 ipcMain.handle("autocheck-save", (_, cfg) => {
   if (cfg.intervalMin !== undefined) store.set("auto_check_interval_min", cfg.intervalMin);
+  return { ok: true };
+});
+
+// ── Action email config ──────────────────────────────────────────────────
+ipcMain.handle("action-email-get", () => ({
+  enabled: store.get("action_email_enabled") === true,
+  address: store.get("action_email_address") || "",
+}));
+
+ipcMain.handle("action-email-save", (_, cfg) => {
+  if (cfg.enabled !== undefined) store.set("action_email_enabled", cfg.enabled);
+  if (cfg.address !== undefined && cfg.address) store.set("action_email_address", cfg.address);
   return { ok: true };
 });
 

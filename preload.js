@@ -42,6 +42,10 @@ contextBridge.exposeInMainWorld("gideon", {
   autocheckGet:  () => ipcRenderer.invoke("autocheck-get"),
   autocheckSave: (c) => ipcRenderer.invoke("autocheck-save", c),
 
+  // Action email relay
+  actionEmailGet:  () => ipcRenderer.invoke("action-email-get"),
+  actionEmailSave: (cfg) => ipcRenderer.invoke("action-email-save", cfg),
+
   // AI urgency triage toggle
   aiUrgencyGet: () => ipcRenderer.invoke("ai-urgency-get"),
   aiUrgencySet: (on) => ipcRenderer.invoke("ai-urgency-set", on),
