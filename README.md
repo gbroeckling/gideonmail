@@ -6,6 +6,8 @@ GideonMail is a focused, privacy-first email client built for people who run the
 
 No cloud sync. No telemetry. No account linking. Everything runs locally.
 
+> **Coming June 1:** [Relegate](https://github.com/gbroeckling/relegate) — the background service version of GideonMail. Same AI engine, no desktop UI, runs on boot. GideonMail is the testing ground for every Relegate feature.
+
 ![Feature Overview](docs/screenshots/feature-overview.svg)
 
 ### [Download for Windows](https://github.com/gbroeckling/gideonmail/releases/latest) | [Mac: clone + npm start](#quick-start)
