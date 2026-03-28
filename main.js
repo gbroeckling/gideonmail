@@ -264,57 +264,99 @@ function _hasAttachments(structure) {
   return false;
 }
 
-async function fetchMessage(uid) {
-  const client = await getImapClient();
-  const lock = await client.getMailboxLock("INBOX");
+async function fetchMessage(uid, folder) {
+  const mailbox = folder || "INBOX";
+  // Try shared client first, retry with fresh client on failure
+  async function _download(client) {
+    const lock = await client.getMailboxLock(mailbox);
+    try {
+      const raw = await client.download(uid.toString(), undefined, { uid: true });
+      if (!raw || !raw.content) throw new Error("Download returned empty");
+      const chunks = [];
+      for await (const chunk of raw.content) chunks.push(chunk);
+      const buffer = Buffer.concat(chunks);
+      const parsed = await simpleParser(buffer);
 
+      // Mark as seen
+      try { await client.messageFlagsAdd(uid.toString(), ["\\Seen"], { uid: true }); } catch (e) {}
+
+      // Extract ICS/calendar attachment text for AI processing
+      let icsText = "";
+      for (const att of (parsed.attachments || [])) {
+        if (att.contentType === "text/calendar" || (att.filename || "").toLowerCase().endsWith(".ics")) {
+          try { icsText += "\n\n[Calendar Invite]\n" + att.content.toString("utf-8"); } catch (e) {}
+        }
+      }
+      if (!icsText && parsed.headerLines) {
+        for (const h of parsed.headerLines) {
+          if (h.key === "content-type" && h.line?.includes("text/calendar")) {
+            icsText = "\n\n[Calendar Invite]\n" + (parsed.text || "");
+            break;
+          }
+        }
+      }
+
+      return {
+        uid,
+        subject: parsed.subject || "(no subject)",
+        from: parsed.from?.value?.[0] || {},
+        to: (parsed.to?.value || []),
+        cc: (parsed.cc?.value || []),
+        date: parsed.date?.toISOString(),
+        html: parsed.html || "",
+        text: (parsed.text || "") + icsText,
+        icsText,
+        attachments: (parsed.attachments || []).map((a) => ({
+          filename: a.filename || "attachment",
+          contentType: a.contentType,
+          size: a.size,
+          contentId: a.contentId,
+        })),
+      };
+    } finally {
+      lock.release();
+    }
+  }
+
+  // Attempt 1: shared client
   try {
-    const raw = await client.download(uid.toString(), undefined, { uid: true });
-    const chunks = [];
-    for await (const chunk of raw.content) chunks.push(chunk);
-    const buffer = Buffer.concat(chunks);
-    const parsed = await simpleParser(buffer);
+    const client = await getImapClient();
+    return await _download(client);
+  } catch (e) {
+    console.log(`fetchMessage: shared client failed (${e.message}), retrying with fresh connection`);
+  }
 
-    // Mark as seen
-    await client.messageFlagsAdd(uid.toString(), ["\\Seen"], { uid: true });
-
-    return {
-      uid,
-      subject: parsed.subject || "(no subject)",
-      from: parsed.from?.value?.[0] || {},
-      to: (parsed.to?.value || []),
-      cc: (parsed.cc?.value || []),
-      date: parsed.date?.toISOString(),
-      html: parsed.html || "",
-      text: parsed.text || "",
-      attachments: (parsed.attachments || []).map((a) => ({
-        filename: a.filename || "attachment",
-        contentType: a.contentType,
-        size: a.size,
-        contentId: a.contentId,
-      })),
-    };
+  // Attempt 2: fresh client (handles stale/dropped connections)
+  const fresh = await createFreshImapClient();
+  try {
+    return await _download(fresh);
   } finally {
-    lock.release();
+    try { await fresh.logout(); } catch (e) {}
   }
 }
 
 async function fetchAttachment(uid, filename) {
-  const client = await getImapClient();
-  const lock = await client.getMailboxLock("INBOX");
+  async function _downloadAtt(client) {
+    const lock = await client.getMailboxLock("INBOX");
+    try {
+      const raw = await client.download(uid.toString(), undefined, { uid: true });
+      if (!raw || !raw.content) throw new Error("Download returned empty");
+      const chunks = [];
+      for await (const chunk of raw.content) chunks.push(chunk);
+      const parsed = await simpleParser(Buffer.concat(chunks));
+      const att = (parsed.attachments || []).find((a) => a.filename === filename);
+      if (!att) throw new Error("Attachment not found");
+      return { filename: att.filename, contentType: att.contentType, data: att.content.toString("base64") };
+    } finally { lock.release(); }
+  }
 
   try {
-    const raw = await client.download(uid.toString(), undefined, { uid: true });
-    const chunks = [];
-    for await (const chunk of raw.content) chunks.push(chunk);
-    const parsed = await simpleParser(Buffer.concat(chunks));
-
-    const att = (parsed.attachments || []).find((a) => a.filename === filename);
-    if (!att) throw new Error("Attachment not found");
-
-    return { filename: att.filename, contentType: att.contentType, data: att.content.toString("base64") };
-  } finally {
-    lock.release();
+    return await _downloadAtt(await getImapClient());
+  } catch (e) {
+    console.log(`fetchAttachment: retrying with fresh connection (${e.message})`);
+    const fresh = await createFreshImapClient();
+    try { return await _downloadAtt(fresh); }
+    finally { try { await fresh.logout(); } catch (e) {} }
   }
 }
 
@@ -396,22 +438,32 @@ async function listFolders() {
   let tree;
   try {
     tree = await client.listTree();
+
+    function walk(node) {
+      if (node.path) {
+        folders.push({
+          name: node.name,
+          path: node.path,
+          specialUse: node.specialUse || null,
+          delimiter: node.delimiter,
+          unseen: 0,
+        });
+      }
+      if (node.folders) node.folders.forEach(walk);
+    }
+    walk(tree);
+
+    // Get unseen count for each folder (fast — uses STATUS, doesn't open mailbox)
+    for (const f of folders) {
+      try {
+        const status = await client.status(f.path, { unseen: true });
+        f.unseen = status.unseen || 0;
+      } catch (e) { f.unseen = 0; }
+    }
   } finally {
     try { await client.logout(); } catch (e) {}
   }
 
-  function walk(node) {
-    if (node.path) {
-      folders.push({
-        name: node.name,
-        path: node.path,
-        specialUse: node.specialUse || null,
-        delimiter: node.delimiter,
-      });
-    }
-    if (node.folders) node.folders.forEach(walk);
-  }
-  walk(tree);
   return folders;
 }
 
@@ -674,32 +726,94 @@ async function sendActionEmail(originalMsg, summary, actions) {
   const cfg = store.get("account");
   if (!cfg) return;
 
+  const crypto = require("crypto");
+  const verifyCode = crypto.randomBytes(6).toString("hex");
   const actionId = `GM-${Date.now()}-${originalMsg.uid}`;
   const fromName = originalMsg.from?.name || originalMsg.from?.address || "Unknown";
+  const fromAddr = originalMsg.from?.address || "";
+  const senderStatus = _senderListStatus(fromAddr, originalMsg.from?.name) || "unknown";
 
+  // Fetch the full email body for context
+  let emailPreview = "";
+  let aiSynopsis = "";
+  try {
+    const fullMsg = await fetchMessage(originalMsg.uid);
+    const bodyText = fullMsg.text || fullMsg.html?.replace(/<[^>]+>/g, " ").substring(0, 3000) || "";
+    emailPreview = bodyText.substring(0, 800).trim();
+
+    // AI synopsis if available
+    if (store.get("anthropic_api_key")) {
+      try {
+        const aiClient = getAnthropicClient();
+        const resp = await aiClient.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 150,
+          system: "Summarize this email in 2-3 sentences. What is it about? What action does the sender want? What's the tone? Be direct and specific.",
+          messages: [{ role: "user", content: `From: ${fromName} <${fromAddr}>\nSubject: ${originalMsg.subject}\nDate: ${originalMsg.date}\n\n${bodyText.substring(0, 2000)}` }],
+        });
+        aiSynopsis = (resp.content[0]?.text || "").trim();
+      } catch (e) {}
+    }
+  } catch (e) {}
+
+  // Build action buttons
   const actionButtons = actions.map((a) =>
-    `<a href="mailto:${cfg.email || cfg.username}?subject=${encodeURIComponent(`[GIDEON-ACTION:${actionId}] ${a.command}`)}&body=${encodeURIComponent(a.command === "reply" ? "reply: " : a.command)}" style="display:inline-block;padding:8px 20px;margin:4px;background:${a.color || "#7c6cff"};color:#fff;text-decoration:none;border-radius:6px;font-weight:600;font-size:14px">${a.label}</a>`
+    `<a href="mailto:${cfg.email || cfg.username}?subject=${encodeURIComponent(`[GIDEON-ACTION:${actionId}:${verifyCode}] ${a.command}`)}&body=${encodeURIComponent(a.command === "reply" ? "reply: " : a.command)}" style="display:inline-block;padding:8px 20px;margin:4px;background:${a.color || "#7c6cff"};color:#fff;text-decoration:none;border-radius:6px;font-weight:600;font-size:14px">${a.label}</a>`
   ).join("\n");
+
+  // Sender management buttons
+  const senderButtons = ["vip", "watch", "daily", "blocked", "muted"].map((role) => {
+    const colors = { vip: "#3b82f6", watch: "#f59e0b", daily: "#22c55e", blocked: "#ef4444", muted: "#64748b" };
+    const labels = { vip: "VIP", watch: "Watch", daily: "Daily", blocked: "Block", muted: "Mute" };
+    const isActive = (senderStatus === "whitelist" && role === "vip") || (senderStatus === "watch" && role === "watch") || (senderStatus === "daily" && role === "daily") || (senderStatus === "blacklist" && role === "blocked") || (senderStatus === "greylist" && role === "muted");
+    const bg = isActive ? colors[role] : "#2a2a32";
+    const border = isActive ? colors[role] : "#55555e";
+    return `<a href="mailto:${cfg.email || cfg.username}?subject=${encodeURIComponent(`[GIDEON-ACTION:${actionId}:${verifyCode}] ${role}`)}&body=${encodeURIComponent(role)}" style="display:inline-block;padding:4px 10px;margin:2px;background:${bg};color:#fff;text-decoration:none;border-radius:4px;font-size:10px;font-weight:600;border:1px solid ${border}">${labels[role]}</a>`;
+  }).join("");
+
+  const statusLabel = { whitelist: "VIP", watch: "WATCH", daily: "DAILY", blacklist: "BLOCKED", greylist: "MUTED", unknown: "Unknown sender" }[senderStatus] || senderStatus;
+  const statusColor = { whitelist: "#3b82f6", watch: "#f59e0b", daily: "#22c55e", blacklist: "#ef4444", greylist: "#64748b", unknown: "#55555e" }[senderStatus] || "#55555e";
 
   const html = `
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
 <body style="margin:0;padding:0;background:#111113;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
-  <div style="max-width:500px;margin:20px auto;background:#1a1a1f;border-radius:12px;overflow:hidden;border:1px solid #2a2a32">
+  <div style="max-width:550px;margin:20px auto;background:#1a1a1f;border-radius:12px;overflow:hidden;border:1px solid #2a2a32">
     <div style="background:linear-gradient(135deg,#7c6cff,#6355e0);padding:16px 24px">
       <div style="color:#fff;font-size:18px;font-weight:700">GideonMail</div>
       <div style="color:#e0d4ff;font-size:11px;margin-top:2px">Action Required</div>
     </div>
     <div style="padding:20px 24px">
-      <div style="color:#8b8b96;font-size:11px;margin-bottom:4px">From: ${fromName}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="color:#8b8b96;font-size:11px">From: <span style="color:#e4e4e8">${fromName}</span></div>
+        <span style="padding:2px 8px;border-radius:3px;font-size:9px;font-weight:700;color:#fff;background:${statusColor}">${statusLabel}</span>
+      </div>
+      <div style="color:#8b8b96;font-size:10px;margin-bottom:4px">${fromAddr} &middot; ${originalMsg.date ? new Date(originalMsg.date).toLocaleString() : ""}</div>
       <div style="color:#e4e4e8;font-size:16px;font-weight:600;margin-bottom:12px">${originalMsg.subject || "(no subject)"}</div>
-      <div style="color:#e4e4e8;font-size:13px;line-height:1.6;padding:12px;background:#111113;border-radius:8px;margin-bottom:16px">${summary}</div>
+
+      ${aiSynopsis ? `<div style="padding:10px 12px;background:#1a1025;border-left:3px solid #a78bfa;border-radius:0 6px 6px 0;margin-bottom:12px">
+        <div style="font-size:9px;color:#a78bfa;font-weight:700;margin-bottom:4px">AI SYNOPSIS</div>
+        <div style="color:#e4e4e8;font-size:12px;line-height:1.5">${aiSynopsis.replace(/\n/g, "<br>")}</div>
+      </div>` : ""}
+
+      ${(summary || "") !== "" ? `<div style="color:#e4e4e8;font-size:12px;line-height:1.5;padding:10px 12px;background:#111113;border-radius:6px;margin-bottom:12px">${(summary || "").replace(/\n/g, "<br>")}</div>` : ""}
+
+      ${emailPreview ? `<div style="padding:10px 12px;background:#111113;border-radius:6px;margin-bottom:12px;border:1px solid #2a2a32">
+        <div style="font-size:9px;color:#55555e;font-weight:700;margin-bottom:4px">EMAIL PREVIEW</div>
+        <div style="color:#8b8b96;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${emailPreview.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>")}</div>
+      </div>` : ""}
+
       <div style="text-align:center;padding:8px 0">
         ${actionButtons}
       </div>
-      <div style="color:#55555e;font-size:10px;text-align:center;margin-top:16px;padding-top:12px;border-top:1px solid #2a2a32">
-        Click a button above or reply to this email with a command:<br>
-        <span style="color:#8b8b96">reply: [your message]</span> · <span style="color:#8b8b96">approve</span> · <span style="color:#8b8b96">decline</span> · <span style="color:#8b8b96">later</span> · <span style="color:#8b8b96">ignore</span>
+
+      <div style="padding:10px 0 4px;border-top:1px solid #2a2a32;margin-top:12px">
+        <div style="font-size:9px;color:#55555e;font-weight:700;margin-bottom:6px;text-align:center">MANAGE THIS SENDER</div>
+        <div style="text-align:center">${senderButtons}</div>
+      </div>
+
+      <div style="color:#55555e;font-size:10px;text-align:center;margin-top:12px;padding-top:10px;border-top:1px solid #2a2a32">
+        Reply with: <span style="color:#8b8b96">reply: [message]</span> &middot; <span style="color:#8b8b96">approve</span> &middot; <span style="color:#8b8b96">decline</span> &middot; <span style="color:#8b8b96">later</span> &middot; <span style="color:#8b8b96">ignore</span>
       </div>
     </div>
   </div>
@@ -716,15 +830,15 @@ async function sendActionEmail(originalMsg, summary, actions) {
     await transport.sendMail({
       from: `GideonMail <${cfg.email || cfg.username}>`,
       to: targetEmail,
-      subject: `[ACTION] ${fromName}: ${originalMsg.subject || "(no subject)"}`,
+      subject: `[ACTION:${verifyCode}] ${fromName}: ${originalMsg.subject || "(no subject)"}`,
       html,
-      text: `GideonMail Action Required\n\nFrom: ${fromName}\nSubject: ${originalMsg.subject}\n\n${summary}\n\nReply with: reply: [message] | approve | decline | later | ignore`,
+      text: `GideonMail Action Required\n\nFrom: ${fromName} <${fromAddr}>\nStatus: ${statusLabel}\nSubject: ${originalMsg.subject}\nDate: ${originalMsg.date || ""}\n\n${aiSynopsis ? `AI Synopsis: ${aiSynopsis}\n\n` : ""}${summary ? `${summary}\n\n` : ""}${emailPreview ? `--- Email Preview ---\n${emailPreview}\n\n` : ""}Reply with: reply: [message] | approve | decline | later | ignore | vip | watch | daily | blocked | muted`,
       headers: { "X-GideonMail-Action-Id": actionId, "X-GideonMail-UID": String(originalMsg.uid) },
     });
 
-    // Track sent action emails
+    // Track sent action emails (with verify code for safe auto-delete)
     const sent = store.get("action_emails_sent") || [];
-    sent.push({ actionId, uid: originalMsg.uid, from: originalMsg.from, subject: originalMsg.subject, sent: new Date().toISOString() });
+    sent.push({ actionId, verifyCode, uid: originalMsg.uid, from: originalMsg.from, subject: originalMsg.subject, sent: new Date().toISOString() });
     if (sent.length > 50) sent.splice(0, sent.length - 50);
     store.set("action_emails_sent", sent);
 
@@ -737,80 +851,123 @@ async function processActionReplies() {
   if (!enabled) return;
 
   const sentActions = store.get("action_emails_sent") || [];
-  if (!sentActions.length) return;
+  // Build a Set of all valid verify codes for fast lookup
+  const validCodes = new Set(sentActions.map((a) => a.verifyCode).filter(Boolean));
+  if (!validCodes.size) return;
 
   try {
     const client = await createFreshImapClient();
     try {
       const lock = await client.getMailboxLock("INBOX");
       try {
-        // Search for replies to action emails
-        const uids = await client.search({ subject: "[GIDEON-ACTION:" }, { uid: true });
+        // Search for anything with ACTION: in subject (outgoing + replies)
+        const uids = await client.search({ subject: "ACTION:" }, { uid: true });
         if (!uids.length) return;
 
-        for await (const msg of client.fetch({ uid: uids.slice(-20) }, { envelope: true, source: true })) {
+        const toDelete = [];
+
+        for await (const msg of client.fetch({ uid: uids.slice(-30) }, { envelope: true, source: true })) {
           const subject = msg.envelope?.subject || "";
-          const actionMatch = subject.match(/\[GIDEON-ACTION:([^\]]+)\]/);
-          if (!actionMatch) continue;
 
-          const actionId = actionMatch[1].trim();
-          const originalAction = sentActions.find((a) => subject.includes(a.actionId));
-          if (!originalAction) continue;
+          // Extract the verify code from subject — present in both outgoing and reply
+          // Outgoing: [ACTION:abc123] ...
+          // Reply button: [GIDEON-ACTION:GM-xxx:abc123] command
+          const codeMatch = subject.match(/\[(?:GIDEON-)?ACTION:(?:[^\]:]*:)?([a-f0-9]{12})\]/);
+          if (!codeMatch) continue;
 
-          // Parse the command from the subject or body
-          let command = subject.replace(/.*\[GIDEON-ACTION:[^\]]+\]\s*/, "").trim().toLowerCase();
+          const code = codeMatch[1];
+          if (!validCodes.has(code)) continue; // not ours or already processed
 
-          // Parse body for command if subject doesn't have it
-          if (!command && msg.source) {
-            const parsed = await simpleParser(msg.source);
-            const bodyText = (parsed.text || "").trim().split("\n")[0].trim().toLowerCase();
-            if (bodyText.startsWith("reply:") || ["approve", "decline", "later", "ignore"].includes(bodyText.split(/\s/)[0])) {
-              command = bodyText;
+          // Code is valid — this is a GideonMail action email, safe to process + delete
+          const originalAction = sentActions.find((a) => a.verifyCode === code);
+
+          // Check if this is a reply with a command (vs the outgoing action email)
+          const actionCmdMatch = subject.match(/\[GIDEON-ACTION:[^\]]+\]\s*(.*)/);
+          if (actionCmdMatch && originalAction) {
+            let command = (actionCmdMatch[1] || "").trim().toLowerCase();
+
+            // Parse body for command if subject doesn't have it
+            if (!command && msg.source) {
+              const parsed = await simpleParser(msg.source);
+              const bodyText = (parsed.text || "").trim().split("\n")[0].trim().toLowerCase();
+              if (bodyText.startsWith("reply:") || ["approve", "decline", "later", "ignore"].includes(bodyText.split(/\s/)[0])) {
+                command = bodyText;
+              }
+            }
+
+            if (command) {
+              console.log(`Action reply (code verified): ${command} for UID ${originalAction.uid}`);
+
+              if (command.startsWith("reply:") || command.startsWith("reply ")) {
+                const replyText = command.replace(/^reply[:\s]+/, "").trim();
+                if (replyText) {
+                  await sendMail({
+                    to: originalAction.from?.address,
+                    subject: originalAction.subject?.startsWith("Re:") ? originalAction.subject : `Re: ${originalAction.subject}`,
+                    text: replyText,
+                    html: replyText.replace(/\n/g, "<br>"),
+                  });
+                  console.log(`Action: replied to ${originalAction.from?.address}`);
+                }
+              } else if (command === "approve") {
+                await sendMail({
+                  to: originalAction.from?.address,
+                  subject: `Re: ${originalAction.subject}`,
+                  text: "Approved.",
+                  html: "Approved.",
+                });
+              } else if (command === "decline") {
+                await sendMail({
+                  to: originalAction.from?.address,
+                  subject: `Re: ${originalAction.subject}`,
+                  text: "Thank you, but I'll have to decline.",
+                  html: "Thank you, but I'll have to decline.",
+                });
+              } else if (command === "later") {
+                await autoCreateTask({ uid: originalAction.uid, subject: originalAction.subject, from: originalAction.from });
+              } else if (command === "vip" || command === "watch" || command === "blocked" || command === "muted" || command === "daily") {
+                // Sender management from action email
+                const senderAddr = originalAction.from?.address;
+                const senderName = originalAction.from?.name || "";
+                if (senderAddr) {
+                  // Remove from any existing list first
+                  for (const key of ["sms_whitelist", "ai_watchlist", "sms_blacklist", "sms_greylist", "daily_update_list"]) {
+                    let list = store.get(key) || [];
+                    list = list.filter((i) => i.address !== senderAddr.toLowerCase());
+                    store.set(key, list);
+                  }
+                  // Add to new role
+                  const roleKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
+                  const list = store.get(roleKeys[command]) || [];
+                  const entry = { id: Date.now().toString(), address: senderAddr.toLowerCase(), name: senderName, enabled: true, created: new Date().toISOString() };
+                  if (command === "watch") entry.actions = { aiAnalyze: true, smsAlert: true, autoCalendar: false, flagImportant: true };
+                  list.push(entry);
+                  store.set(roleKeys[command], list);
+                  console.log(`Action: moved ${senderAddr} to ${command} list`);
+                }
+              }
+
+              // Command processed — remove from tracking
+              const idx = sentActions.findIndex((a) => a.verifyCode === code);
+              if (idx >= 0) sentActions.splice(idx, 1);
+              store.set("action_emails_sent", sentActions);
             }
           }
 
-          if (!command) continue;
+          // Valid code = safe to auto-delete (outgoing or reply, doesn't matter)
+          toDelete.push(msg.uid);
+        }
 
-          console.log(`Action reply: ${command} for UID ${originalAction.uid}`);
-
-          // Execute the command
-          if (command.startsWith("reply:") || command.startsWith("reply ")) {
-            const replyText = command.replace(/^reply[:\s]+/, "").trim();
-            if (replyText) {
-              await sendMail({
-                to: originalAction.from?.address,
-                subject: originalAction.subject?.startsWith("Re:") ? originalAction.subject : `Re: ${originalAction.subject}`,
-                text: replyText,
-                html: replyText.replace(/\n/g, "<br>"),
-              });
-              console.log(`Action: replied to ${originalAction.from?.address}`);
+        // Batch delete all action emails with valid codes
+        if (toDelete.length > 0) {
+          try {
+            await client.messageDelete(toDelete.map(String), { uid: true });
+            console.log(`Action cleanup: deleted ${toDelete.length} action email(s)`);
+          } catch (e) {
+            for (const uid of toDelete) {
+              try { await client.messageDelete(String(uid), { uid: true }); } catch (e2) {}
             }
-          } else if (command === "approve") {
-            await sendMail({
-              to: originalAction.from?.address,
-              subject: `Re: ${originalAction.subject}`,
-              text: "Approved.",
-              html: "Approved.",
-            });
-          } else if (command === "decline") {
-            await sendMail({
-              to: originalAction.from?.address,
-              subject: `Re: ${originalAction.subject}`,
-              text: "Thank you, but I'll have to decline.",
-              html: "Thank you, but I'll have to decline.",
-            });
-          } else if (command === "later") {
-            await autoCreateTask({ uid: originalAction.uid, subject: originalAction.subject, from: originalAction.from });
           }
-          // "ignore" = do nothing
-
-          // Delete the action reply from inbox
-          try { await client.messageDelete(String(msg.uid), { uid: true }); } catch (e) {}
-
-          // Remove from tracking
-          const idx = sentActions.findIndex((a) => a.actionId === actionId);
-          if (idx >= 0) sentActions.splice(idx, 1);
-          store.set("action_emails_sent", sentActions);
         }
       } finally { lock.release(); }
     } finally { try { await client.logout(); } catch (e) {} }
@@ -928,6 +1085,211 @@ function _formatEmailForSms(msg, format) {
   }
 }
 
+// Extract online meeting links from email text
+function _extractMeetingLink(text) {
+  if (!text) return "";
+  const patterns = [
+    /https?:\/\/[\w.-]*zoom\.us\/j\/[\w?=&%-]+/i,
+    /https?:\/\/teams\.microsoft\.com\/l\/meetup-join\/[\w?=&%/+-]+/i,
+    /https?:\/\/meet\.google\.com\/[\w-]+/i,
+    /https?:\/\/[\w.-]*webex\.com\/[\w./%-]+/i,
+    /https?:\/\/[\w.-]*gotomeet(?:ing)?\.com\/[\w/%-]+/i,
+    /https?:\/\/[\w.-]*whereby\.com\/[\w/%-]+/i,
+    /https?:\/\/[\w.-]*bluejeans\.com\/[\w/%-]+/i,
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m) return m[0];
+  }
+  return "";
+}
+
+// ── Voice Profile (Learn Voice) ─────────────────────────────────────────
+async function learnVoice() {
+  // Sample sent emails to build a writing style profile
+  const existing = store.get("voice_profile");
+  const lastLearn = store.get("voice_profile_date");
+  // Refresh weekly at most
+  if (existing && lastLearn && (Date.now() - new Date(lastLearn).getTime()) < 7 * 86400000) return existing;
+
+  if (!store.get("anthropic_api_key")) return existing || "";
+
+  try {
+    const client = await createFreshImapClient();
+    try {
+      const tree = await client.listTree();
+      let sentPath = null;
+      function findSent(node) { if (node.specialUse === "\\Sent" || /^sent/i.test(node.name)) sentPath = node.path; if (node.folders) node.folders.forEach(findSent); }
+      findSent(tree);
+      if (!sentPath) return existing || "";
+
+      const lock = await client.getMailboxLock(sentPath);
+      try {
+        // Get the 20 most recent sent emails
+        const uids = await client.search({ since: new Date(Date.now() - 30 * 86400000) }, { uid: true });
+        if (!uids.length) return existing || "";
+
+        const samples = [];
+        const sampleUids = uids.slice(-20);
+        for await (const msg of client.fetch({ uid: sampleUids }, { source: true })) {
+          try {
+            const parsed = await simpleParser(msg.source);
+            const text = (parsed.text || "").substring(0, 500);
+            if (text.length > 30) samples.push(text);
+          } catch (e) {}
+          if (samples.length >= 15) break;
+        }
+
+        if (samples.length < 3) return existing || "";
+
+        // AI analyzes writing style
+        const aiClient = getAnthropicClient();
+        const resp = await aiClient.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 300,
+          system: `Analyze these email samples and describe the writer's style in 3-4 sentences. Focus on: tone (formal/casual/friendly), typical greeting/sign-off, sentence length, vocabulary level, any distinctive patterns. This will be used to ghost-write emails in their voice.`,
+          messages: [{ role: "user", content: samples.map((s, i) => `Sample ${i + 1}:\n${s}`).join("\n\n") }],
+        });
+
+        const profile = (resp.content[0]?.text || "").trim();
+        if (profile) {
+          store.set("voice_profile", profile);
+          store.set("voice_profile_date", new Date().toISOString());
+          console.log("Voice profile updated:", profile.substring(0, 80));
+          return profile;
+        }
+      } finally { lock.release(); }
+    } finally { try { await client.logout(); } catch (e) {} }
+  } catch (e) { console.error("Learn voice failed:", e.message); }
+  return existing || "";
+}
+
+// ── Thread Summarization ────────────────────────────────────────────────
+async function summarizeThread(msg) {
+  // Fetch the full message and look for quoted/forwarded content to summarize
+  try {
+    const fullMsg = await fetchMessage(msg.uid);
+    const content = fullMsg.text || fullMsg.html?.replace(/<[^>]+>/g, " ").substring(0, 4000) || "";
+
+    // Only summarize if there's quoted content (indicates a thread)
+    const hasThread = content.includes("On ") && content.includes("wrote:") ||
+                      content.includes("From:") && content.includes("Sent:") ||
+                      content.includes("-----Original Message-----") ||
+                      content.includes(">" + " ");
+    if (!hasThread && content.length < 500) return null;
+
+    const aiClient = getAnthropicClient();
+    const resp = await aiClient.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 150,
+      system: `Summarize this email thread in 1-2 sentences. Focus on: what's being discussed, any decisions made, and what action is needed now. If it's a single email (no thread), summarize it in one sentence.`,
+      messages: [{ role: "user", content: `From: ${msg.from?.name || msg.from?.address}\nSubject: ${msg.subject}\n\n${content}` }],
+    });
+    return (resp.content[0]?.text || "").trim() || null;
+  } catch (e) { return null; }
+}
+
+// ── Auto-Unsubscribe ────────────────────────────────────────────────────
+async function autoUnsubscribe(uid) {
+  // Check for List-Unsubscribe header and act on it
+  try {
+    const client = await createFreshImapClient();
+    try {
+      const lock = await client.getMailboxLock("INBOX");
+      try {
+        const raw = await client.download(uid.toString(), undefined, { uid: true });
+        if (!raw || !raw.content) throw new Error("Download failed");
+        const chunks = [];
+        for await (const chunk of raw.content) chunks.push(chunk);
+        const parsed = await simpleParser(Buffer.concat(chunks));
+
+        const unsubHeader = parsed.headers?.get("list-unsubscribe") || "";
+        const unsubPost = parsed.headers?.get("list-unsubscribe-post") || "";
+
+        // Fallback: if no List-Unsubscribe header, scan body for unsubscribe links
+        if (!unsubHeader) {
+          const bodyHtml = parsed.html || "";
+          const bodyText = parsed.text || "";
+          // Look for unsubscribe links in HTML (most common pattern)
+          const unsubLinkMatch = bodyHtml.match(/<a[^>]+href=["'](https?:\/\/[^"']+unsubscribe[^"']*|https?:\/\/[^"']*opt[_-]?out[^"']*|https?:\/\/[^"']*remove[^"']*|https?:\/\/[^"']*preferences[^"']*)['"]/i)
+            || bodyText.match(/(https?:\/\/\S*unsubscribe\S*|https?:\/\/\S*opt[_-]?out\S*)/i);
+          if (unsubLinkMatch) {
+            const unsubUrl = unsubLinkMatch[1];
+            try {
+              const mod = unsubUrl.startsWith("https") ? require("https") : require("http");
+              await new Promise((resolve) => {
+                const urlParsed = new URL(unsubUrl);
+                const req = mod.request({
+                  hostname: urlParsed.hostname, port: urlParsed.port,
+                  path: urlParsed.pathname + urlParsed.search,
+                  method: "GET",
+                  headers: { "User-Agent": "GideonMail/1.0" },
+                }, (r) => { r.resume(); r.on("end", () => resolve(true)); });
+                req.on("error", () => resolve(false));
+                req.end();
+              });
+              console.log(`Auto-unsubscribe (body link): ${unsubUrl}`);
+              return true;
+            } catch (e) {}
+          }
+          return false;
+        }
+
+        // Try mailto: unsubscribe first (most reliable)
+        const mailtoMatch = unsubHeader.match(/<mailto:([^>]+)>/i);
+        if (mailtoMatch) {
+          const mailto = mailtoMatch[1];
+          const [addr, queryStr] = mailto.split("?");
+          let subject = "unsubscribe";
+          if (queryStr) {
+            const params = new URLSearchParams(queryStr);
+            subject = params.get("subject") || "unsubscribe";
+          }
+          const cfg = store.get("account");
+          if (cfg) {
+            const transport = nodemailer.createTransport({
+              host: cfg.smtpHost, port: cfg.smtpPort || 587,
+              secure: cfg.smtpSecure || false,
+              auth: { user: cfg.username, pass: cfg.password },
+              tls: { rejectUnauthorized: false },
+            });
+            await transport.sendMail({
+              from: `${cfg.displayName || cfg.username} <${cfg.email || cfg.username}>`,
+              to: addr, subject, text: "unsubscribe",
+            });
+            console.log(`Auto-unsubscribe (mailto): sent to ${addr}`);
+            return true;
+          }
+        }
+
+        // Try HTTP unsubscribe (one-click via POST if List-Unsubscribe-Post header present)
+        const httpMatch = unsubHeader.match(/<(https?:\/\/[^>]+)>/i);
+        if (httpMatch && unsubPost) {
+          const url = httpMatch[1];
+          try {
+            const mod = url.startsWith("https") ? require("https") : require("http");
+            await new Promise((resolve) => {
+              const parsed = new URL(url);
+              const postBody = "List-Unsubscribe=One-Click";
+              const req = mod.request({
+                hostname: parsed.hostname, port: parsed.port, path: parsed.pathname + parsed.search,
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": Buffer.byteLength(postBody) },
+              }, (r) => { r.resume(); r.on("end", () => resolve(true)); });
+              req.on("error", () => resolve(false));
+              req.write(postBody); req.end();
+            });
+            console.log(`Auto-unsubscribe (HTTP POST): ${url}`);
+            return true;
+          } catch (e) {}
+        }
+
+        return false;
+      } finally { lock.release(); }
+    } finally { try { await client.logout(); } catch (e) {} }
+  } catch (e) { console.error("Auto-unsubscribe failed:", e.message); return false; }
+}
+
 // ── Low Touch Autopilot ─────────────────────────────────────────────────
 async function lowTouchEnsureFolders() {
   // Create AI category folders if they don't exist (only when Low Touch is on)
@@ -949,10 +1311,14 @@ async function lowTouchEnsureFolders() {
   } catch (e) { console.error("Low Touch folder setup failed:", e.message); }
 }
 
+let _lowTouchRunning = false;
 async function lowTouchProcess(messages) {
   if (store.get("low_touch_enabled") !== true) return;
   if (!store.get("anthropic_api_key")) return;
+  if (_lowTouchRunning) { console.log("Low Touch: already running, skipping"); return; }
+  _lowTouchRunning = true;
 
+  try {
   // Ensure category folders exist
   await lowTouchEnsureFolders();
 
@@ -970,6 +1336,9 @@ async function lowTouchProcess(messages) {
   const client = getAnthropicClient();
   const account = store.get("account") || {};
   const smsTo = store.get("sms_to");
+
+  // Learn voice profile on first run (or refresh weekly)
+  const voiceProfile = await learnVoice();
 
   for (const msg of unknown.slice(0, 10)) { // max 10 per cycle
     try {
@@ -1003,6 +1372,15 @@ Categories:
       const category = cat.category || "notification";
       console.log(`Low Touch: ${msg.from?.address} "${msg.subject}" → ${category}`);
 
+      // Scan personal/action emails for incoming commitments
+      if (category === "personal" || category === "action" || category === "meeting") {
+        try {
+          const fullMsgForCommit = await fetchMessage(msg.uid);
+          const commitContent = fullMsgForCommit.text || fullMsgForCommit.html?.replace(/<[^>]+>/g, " ").substring(0, 1500) || "";
+          if (commitContent.length > 30) scanIncomingCommitments(msg, commitContent).catch(() => {});
+        } catch (e) {}
+      }
+
       // Step 2: Act based on category
       if (category === "spam") {
         // Delete spam
@@ -1010,6 +1388,11 @@ Categories:
         console.log(`Low Touch: deleted spam from ${msg.from?.address}`);
 
       } else if (category === "newsletter") {
+        // Auto-unsubscribe if enabled, then move to Newsletters folder
+        if (store.get("low_touch_auto_unsub") === true) {
+          const unsub = await autoUnsubscribe(msg.uid);
+          if (unsub) console.log(`Low Touch: auto-unsubscribed from ${msg.from?.address}`);
+        }
         // Move to Newsletters folder
         try {
           const archiveClient = await createFreshImapClient();
@@ -1054,18 +1437,30 @@ Categories:
         } catch (e) {}
 
       } else if (category === "action" || cat.needsReply) {
-        // AI drafts a reply in the user's voice
+        // AI drafts a reply in the user's learned voice
         try {
           const fullMsg = await fetchMessage(msg.uid);
           const content = fullMsg.text || fullMsg.html?.replace(/<[^>]+>/g, " ").substring(0, 2000) || "";
+
+          // Scan for incoming commitments (promises they're making to us)
+          scanIncomingCommitments(msg, content).catch(() => {});
+
+          // Thread summary for context
+          const threadSummary = await summarizeThread(msg);
+
+          const voiceInstr = voiceProfile
+            ? `\n\nIMPORTANT — Write in this person's voice:\n${voiceProfile}`
+            : "";
+          const threadCtx = threadSummary
+            ? `\n\nThread summary: ${threadSummary}`
+            : "";
 
           const draftResp = await client.messages.create({
             model: "claude-haiku-4-5-20251001",
             max_tokens: 300,
             system: `You are drafting a reply on behalf of ${account.displayName || "the user"} (${account.email || ""}).
-Write a concise, professional reply. Match the tone of the original (formal if formal, casual if casual).
-Only output the reply body.`,
-            messages: [{ role: "user", content: `Original from ${msg.from?.name || msg.from?.address}:\nSubject: ${msg.subject}\n\n${content}\n\nDraft a reply.` }],
+Write a concise reply that sounds like them. Only output the reply body.${voiceInstr}`,
+            messages: [{ role: "user", content: `Original from ${msg.from?.name || msg.from?.address}:\nSubject: ${msg.subject}${threadCtx}\n\n${content}\n\nDraft a reply.` }],
           });
           const draft = draftResp.content[0]?.text || "";
 
@@ -1086,12 +1481,21 @@ Only output the reply body.`,
         } catch (e) { console.error("Low Touch draft failed:", e.message); }
 
       } else if (category === "meeting") {
-        // Auto-create calendar event
+        // Fetch body for meeting link extraction + proper calendar creation
+        let meetBody = "";
+        try {
+          const fullMsg = await fetchMessage(msg.uid);
+          meetBody = fullMsg.text || fullMsg.html?.replace(/<[^>]+>/g, " ").substring(0, 3000) || "";
+        } catch (e) {}
+        const meetLink = _extractMeetingLink(meetBody);
+
         if (googleAuth?.isConnected) {
-          try { await autoCreateTask(msg, `Meeting: ${msg.subject}`); } catch (e) {}
+          try { await autoCreateTask(msg, `Meeting: ${msg.subject}`, meetBody, meetLink); } catch (e) {}
         }
+        let alertText = `MEETING: ${msg.from?.name || msg.from?.address}: ${msg.subject}`;
+        if (meetLink) alertText += `\n🔗 ${meetLink}`;
         if (smsTo) {
-          await sendAlert(`MEETING: ${msg.from?.name || msg.from?.address}: ${msg.subject}`);
+          await sendAlert(alertText);
           _addSmsSentUid(msg.uid);
         }
 
@@ -1149,12 +1553,31 @@ Only output the reply body.`,
                   const iLock = await inboxClient.getMailboxLock("INBOX");
                   try {
                     const replies = await inboxClient.search({ from: toAddr, since: nudgeCutoff }, { uid: true });
-                    if (replies.length === 0) {
-                      // No reply — send nudge alert
-                      if (smsTo && !nudged.has(sent.uid)) {
+                    if (replies.length === 0 && !nudged.has(sent.uid)) {
+                      // No reply — auto-send follow-up nudge if enabled
+                      if (store.get("low_touch_auto_nudge") === true && voiceProfile) {
+                        try {
+                          const aiClient = getAnthropicClient();
+                          const nudgeResp = await aiClient.messages.create({
+                            model: "claude-haiku-4-5-20251001",
+                            max_tokens: 200,
+                            system: `Write a brief, polite follow-up email. The user sent an email ${nudgeDays} days ago and hasn't received a reply. Keep it short (2-3 sentences). Don't be pushy. Only output the email body.\n\nWrite in this person's voice:\n${voiceProfile}`,
+                            messages: [{ role: "user", content: `Original subject: ${sent.envelope?.subject}\nSent to: ${toAddr}\nDays since sent: ${nudgeDays}` }],
+                          });
+                          const nudgeText = (nudgeResp.content[0]?.text || "").trim();
+                          if (nudgeText) {
+                            const originalSubject = sent.envelope?.subject || "";
+                            const reSubject = originalSubject.startsWith("Re:") ? originalSubject : `Re: ${originalSubject}`;
+                            await sendMail({ to: toAddr, subject: reSubject, text: nudgeText, html: nudgeText.replace(/\n/g, "<br>") });
+                            console.log(`Low Touch: auto-nudge sent to ${toAddr} re: "${originalSubject}"`);
+                            if (smsTo) await sendAlert(`NUDGE SENT: Follow-up to ${toAddr} re: "${originalSubject}"`);
+                          }
+                        } catch (e) { console.error("Auto-nudge draft failed:", e.message); }
+                      } else if (smsTo) {
+                        // Fallback: just alert
                         await sendAlert(`FOLLOW-UP: No reply from ${toAddr} to "${sent.envelope?.subject}" (${nudgeDays} days)`);
-                        nudged.add(sent.uid);
                       }
+                      nudged.add(sent.uid);
                     }
                   } finally { iLock.release(); }
                 } finally { try { await inboxClient.logout(); } catch (e) {} }
@@ -1169,17 +1592,43 @@ Only output the reply body.`,
       }
     } finally { try { await nudgeClient.logout(); } catch (e) {} }
   } catch (e) { console.error("Low Touch nudge check failed:", e.message); }
+  } finally { _lowTouchRunning = false; }
 }
 
 // IPC handlers for Low Touch
 ipcMain.handle("low-touch-get", () => ({
   enabled: store.get("low_touch_enabled") === true,
   nudgeDays: store.get("low_touch_nudge_days") || 5,
+  autoUnsub: store.get("low_touch_auto_unsub") === true,
+  autoNudge: store.get("low_touch_auto_nudge") === true,
+  voiceProfile: store.get("voice_profile") || "",
 }));
 
 ipcMain.handle("low-touch-set", (_, cfg) => {
   if (cfg.enabled !== undefined) store.set("low_touch_enabled", cfg.enabled);
   if (cfg.nudgeDays !== undefined) store.set("low_touch_nudge_days", cfg.nudgeDays);
+  if (cfg.autoUnsub !== undefined) store.set("low_touch_auto_unsub", cfg.autoUnsub);
+  if (cfg.autoNudge !== undefined) store.set("low_touch_auto_nudge", cfg.autoNudge);
+  return { ok: true };
+});
+
+ipcMain.handle("low-touch-learn-voice", async () => {
+  try {
+    store.delete("voice_profile_date"); // force refresh
+    const profile = await learnVoice();
+    return { ok: true, profile };
+  } catch (e) { return { error: e.message }; }
+});
+
+// Reputation + Commitments IPC
+ipcMain.handle("reputation-get", () => store.get("sender_reputation") || {});
+ipcMain.handle("reputation-suggestions", () => checkReputationSuggestions());
+ipcMain.handle("commitments-get", () => (store.get("tracked_commitments") || []).filter((c) => !c.fulfilled));
+ipcMain.handle("commitments-fulfill", (_, id) => {
+  const list = store.get("tracked_commitments") || [];
+  const item = list.find((c) => c.id === id);
+  if (item) item.fulfilled = true;
+  store.set("tracked_commitments", list);
   return { ok: true };
 });
 
@@ -1208,15 +1657,16 @@ async function autoTriageNewMail(messages) {
     if (sinceLast < 30000) { return; } // checked less than 30s ago, skip
   }
 
-  // Filter out greylisted and blacklisted senders from SMS triggers
+  // Filter out greylisted, daily update, and blacklisted senders from SMS triggers
   const _greylist = (store.get("sms_greylist") || []).filter((g) => g.enabled);
   const _blacklist = (store.get("sms_blacklist") || []).filter((b) => b.enabled);
+  const _dailyUpdate = (store.get("daily_update_list") || []).filter((d) => d.enabled);
   const _matchesList = (msg, list) => list.some((w) => {
     const addr = (msg.from?.address || "").toLowerCase();
     const name = (msg.from?.name || "").toLowerCase();
     return w.address && (addr === w.address || addr.includes(w.address) || name.includes(w.address));
   });
-  const smsEligible = newMsgs.filter((m) => !_matchesList(m, _greylist) && !_matchesList(m, _blacklist));
+  const smsEligible = newMsgs.filter((m) => !_matchesList(m, _greylist) && !_matchesList(m, _blacklist) && !_matchesList(m, _dailyUpdate));
 
   // Run blacklist cleanup (delete emails > 1 week old from blacklisted senders)
   cleanupBlacklistedEmails().catch((e) => console.error("Blacklist cleanup:", e.message));
@@ -1315,18 +1765,24 @@ async function autoTriageNewMail(messages) {
               const resp = await client.messages.create({
                 model: "claude-haiku-4-5-20251001",
                 max_tokens: 512,
-                system: `Extract calendar event details from this email. Today is ${today}. Return ONLY valid JSON: {"title":"","date":"YYYY-MM-DD","startTime":"HH:MM","endTime":"HH:MM","location":"","description":"","attendees":[]}. If no date, use tomorrow. If no time, use 09:00-10:00.`,
+                system: `Extract calendar event details from this email. Today is ${today}. Return ONLY valid JSON: {"title":"","date":"YYYY-MM-DD","startTime":"HH:MM","endTime":"HH:MM","location":"","description":"","attendees":[],"meetingLink":""}. If no date, use tomorrow. If no time, use 09:00-10:00. For meetingLink: extract any Zoom/Teams/Meet/Webex URL. If only a meeting ID is given (e.g. "Zoom ID: 123 456 7890"), construct the full URL (e.g. "https://zoom.us/j/12345678900"). Include passcode if present.`,
                 messages: [{ role: "user", content: `From: ${fullMsg.from?.name || ""} <${fullMsg.from?.address || ""}>\nSubject: ${fullMsg.subject}\n\n${content}` }],
               });
               const jsonMatch = (resp.content[0]?.text || "").match(/\{[\s\S]*\}/);
               if (jsonMatch) {
                 const event = JSON.parse(jsonMatch[0]);
+                // Also try regex extraction
+                if (!event.meetingLink) event.meetingLink = _extractMeetingLink(content);
                 const token = await googleAuth.getToken();
                 const calId = store.get("google_calendar_id") || "primary";
                 const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
                 // Auto-calendar never invites attendees — only manual Task with approval does
+                let eventDesc = event.description || "";
+                if (event.meetingLink) eventDesc += `\n\nJoin meeting: ${event.meetingLink}`;
+                eventDesc += "\nAuto-created by GideonMail";
+                const eventLoc = event.location || event.meetingLink || "";
                 const body = JSON.stringify({
-                  summary: event.title, description: event.description || "", location: event.location || "",
+                  summary: event.title, description: eventDesc, location: eventLoc,
                   start: { dateTime: `${event.date}T${event.startTime || "09:00"}:00`, timeZone: timezone },
                   end: { dateTime: `${event.date}T${event.endTime || "10:00"}:00`, timeZone: timezone },
                 });
@@ -1408,25 +1864,75 @@ async function autoTriageNewMail(messages) {
           let smsText = `VIP: ${_formatEmailForSms(m, s.format)}`;
           let isMeeting = false;
 
+          // DKIM/DMARC/SPF check — warn if VIP sender fails authentication
+          try {
+            const freshAuth = await createFreshImapClient();
+            try {
+              const lock = await freshAuth.getMailboxLock("INBOX");
+              try {
+                const raw = await freshAuth.download(m.uid.toString(), undefined, { uid: true });
+                if (raw?.content) {
+                  const chunks = []; for await (const c of raw.content) chunks.push(c);
+                  const parsed = await simpleParser(Buffer.concat(chunks));
+                  const hdrs = parsed.headers ? Object.fromEntries(parsed.headers) : {};
+                  const auth = security.checkAuthentication(hdrs);
+                  if (auth.spoofRisk) {
+                    smsText = `⚠ SPOOF WARNING: ${m.from?.address} failed DKIM/SPF/DMARC — may be impersonating a VIP\n${smsText}`;
+                    console.warn(`VIP SPOOF RISK: ${m.from?.address} — ${auth.details}`);
+                  }
+                }
+              } finally { lock.release(); }
+            } finally { try { await freshAuth.logout(); } catch (e) {} }
+          } catch (e) { /* auth check failed, proceed with caution */ }
+
           // Deadline detection for VIP emails
           if (store.get("anthropic_api_key")) {
             const deadline = await detectDeadline(m);
             if (deadline) smsText += ` [DUE ${deadline}]`;
           }
 
-          // Meeting detection + location extraction for VIP emails (one AI call)
+          // Meeting detection + location/link extraction for VIP emails (one AI call)
+          // Fetch the email body so AI can detect meetings mentioned in body, not just subject
           let meetingLocation = "";
+          let meetingLink = "";
+          let emailBodyText = "";
           if (detectMeetings && store.get("anthropic_api_key")) {
             try {
+              const freshClient = await createFreshImapClient();
+              try {
+                const lock = await freshClient.getMailboxLock("INBOX");
+                try {
+                  const raw = await freshClient.download(m.uid.toString(), undefined, { uid: true });
+                  if (!raw || !raw.content) throw new Error("Download failed");
+                  const chunks = [];
+                  for await (const chunk of raw.content) chunks.push(chunk);
+                  const parsed = await simpleParser(Buffer.concat(chunks));
+                  emailBodyText = (parsed.text || parsed.html?.replace(/<[^>]+>/g, " ") || "").substring(0, 2000);
+                  // Extract ICS calendar attachments
+                  for (const att of (parsed.attachments || [])) {
+                    if (att.contentType === "text/calendar" || (att.filename || "").toLowerCase().endsWith(".ics")) {
+                      try { emailBodyText += "\n\n[Calendar Invite]\n" + att.content.toString("utf-8").substring(0, 1500); } catch (e) {}
+                    }
+                  }
+                } finally { lock.release(); }
+              } finally { try { await freshClient.logout(); } catch (e) {} }
+            } catch (e) { console.error("VIP body fetch:", e.message); }
+
+            // Extract online meeting link via regex (more reliable than AI for URLs)
+            meetingLink = _extractMeetingLink(emailBodyText);
+
+            try {
               const client = getAnthropicClient();
+              const emailContent = emailBodyText || m.subject;
               const resp = await client.messages.create({
                 model: "claude-haiku-4-5-20251001",
                 max_tokens: 100,
                 system: `Analyze this email. Respond with ONLY valid JSON:
 {"meeting": true/false, "location": "full address or venue name or empty string"}
 A meeting is any scheduled event, appointment, call, interview, or gathering with a specific date/time.
-For location: extract the full street address if available. If only a venue name, include it. If no location mentioned, use empty string.`,
-                messages: [{ role: "user", content: `From: ${m.from?.name || m.from?.address}\nSubject: ${m.subject}` }],
+Online meetings (Zoom, Teams, Meet, etc.) count as meetings.
+For location: extract the full street address if available. If only a venue name, include it. If it's an online meeting, use the platform name (e.g. "Zoom", "Microsoft Teams"). If no location mentioned, use empty string.`,
+                messages: [{ role: "user", content: `From: ${m.from?.name || m.from?.address}\nSubject: ${m.subject}\n\n${emailContent}` }],
               });
               const meetingText = (resp.content[0]?.text || "").trim();
               try {
@@ -1436,11 +1942,13 @@ For location: extract the full street address if available. If only a venue name
               } catch (e) {
                 isMeeting = meetingText.toUpperCase().includes("TRUE");
               }
-            } catch (e) { /* skip detection */ }
+              console.log(`VIP meeting detect: "${m.subject}" => isMeeting=${isMeeting}, location="${meetingLocation}"`);
+            } catch (e) { console.error("VIP meeting AI:", e.message); }
           }
 
           // VIP auto-calendar: create event immediately, no prompt
-          const vipAutoCalendar = store.get("vip_auto_calendar") === true;
+          // Default to true when meeting detection is on (user expects it to work)
+          const vipAutoCalendar = store.get("vip_auto_calendar") !== false;
           const vipAiReview = store.get("vip_ai_review") === true;
 
           // AI review for VIP emails
@@ -1453,15 +1961,33 @@ For location: extract the full street address if available. If only a venue name
           }
 
           if (isMeeting && vipAutoCalendar && googleAuth?.isConnected) {
-            // Auto-create calendar event immediately
+            // Auto-create or reschedule calendar event
             try {
-              await autoCreateTask(m, `Meeting: ${m.subject}`);
-              smsText = `MEETING AUTO-ADDED: ${m.from?.name || m.from?.address}: ${m.subject}`;
-              if (meetingLocation) smsText += `\n📍 ${meetingLocation}`;
+              const result = await autoCreateTask(m, `Meeting: ${m.subject}`, emailBodyText, meetingLink);
+              const fromName = m.from?.name || m.from?.address;
+
+              // Build detailed SMS with all meeting info
+              const startStr = result?.start ? result.start.toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+              const endStr = result?.end ? result.end.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "";
+              const loc = result?.location || meetingLocation || "";
+
+              if (result?.rescheduled && result.oldEvent) {
+                const oldStart = new Date(result.oldEvent.start).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+                smsText = `MEETING RESCHEDULED: ${fromName}\n${result.title || m.subject}\n${oldStart} → ${startStr}`;
+                if (result.oldEvent.location && result.oldEvent.location !== loc) smsText += `\nWas: ${result.oldEvent.location}`;
+              } else if (result?.rescheduled) {
+                smsText = `MEETING RESCHEDULED: ${fromName}: ${result.title || m.subject}\n📅 ${startStr}–${endStr}`;
+              } else {
+                smsText = `MEETING ADDED: ${fromName}: ${result?.title || m.subject}\n📅 ${startStr}–${endStr}`;
+              }
+              if (loc) smsText += `\n📍 ${loc}`;
+              if (result?.meetingLink || meetingLink) smsText += `\n🔗 ${result?.meetingLink || meetingLink}`;
+
               try {
                 const { Notification: WinNotifAuto } = require("electron");
                 if (WinNotifAuto.isSupported()) {
-                  const n = new WinNotifAuto({ title: "Meeting Auto-Added to Calendar", body: `${m.from?.name || m.from?.address}: ${m.subject}`, silent: false });
+                  const notifTitle = result?.rescheduled ? "Meeting Rescheduled on Calendar" : "Meeting Auto-Added to Calendar";
+                  const n = new WinNotifAuto({ title: notifTitle, body: `${fromName}: ${m.subject}`, silent: false });
                   n.show();
                   n.on("click", () => { mainWindow?.show(); mainWindow?.focus(); });
                 }
@@ -1470,6 +1996,7 @@ For location: extract the full street address if available. If only a venue name
           } else if (isMeeting) {
             smsText = `MEETING from ${m.from?.name || m.from?.address}: ${m.subject}`;
             if (meetingLocation) smsText += `\n📍 ${meetingLocation}`;
+            if (meetingLink) smsText += `\n🔗 ${meetingLink}`;
             // Queue as pending appointment
             const pending = store.get("pending_appointments") || [];
             pending.push({ uid: m.uid, subject: m.subject, from: m.from, date: m.date, created: new Date().toISOString() });
@@ -1503,24 +2030,33 @@ For location: extract the full street address if available. If only a venue name
           try {
             await sendAlert(smsText);
             _addSmsSentUid(m.uid);
-            // Send action email for phone-based reply
-            await sendActionEmail(m, smsText, [
+            // Send detailed action email for phone-based reply
+            const actionButtons = isMeeting ? [
+              { label: "Accept & Reply", command: "approve", color: "#4ade80" },
+              { label: "Decline", command: "decline", color: "#f06060" },
+              { label: "Reschedule", command: "reply: Can we reschedule? Let me check my calendar and get back to you.", color: "#ff9f43" },
+              { label: "Reply", command: "reply", color: "#7c6cff" },
+              { label: "Ignore", command: "ignore", color: "#55555e" },
+            ] : [
               { label: "Reply", command: "reply", color: "#7c6cff" },
               { label: "Approve", command: "approve", color: "#4ade80" },
               { label: "Decline", command: "decline", color: "#f06060" },
               { label: "Later", command: "later", color: "#ff9f43" },
               { label: "Ignore", command: "ignore", color: "#55555e" },
-            ]);
+            ];
+            await sendActionEmail(m, smsText, actionButtons);
           } catch (e) { console.error("VIP alert failed:", e.message); }
         }
       }
     }
   }
 
-  // ── Check for active conversations (only SMS-eligible senders) ─────────
+  // ── Check for active conversations (only SMS-eligible senders, skip already-alerted) ──
   if (smsTo) {
     try {
-      const conversationAlerts = await checkActiveConversations(smsEligible);
+      const alreadyAlerted = _getSmsSentUids();
+      const convoEligible = smsEligible.filter((m) => !alreadyAlerted.has(m.uid));
+      const conversationAlerts = await checkActiveConversations(convoEligible);
       if (conversationAlerts.length > 0) {
         const summary = conversationAlerts.map((a) =>
           `${a.from}: ${a.subject} (you replied ${a.replyCount}x)`
@@ -1711,15 +2247,21 @@ ipcMain.handle("test-connection", async () => {
 
 ipcMain.handle("fetch-inbox", async (_, page) => {
   try {
-    return await fetchInbox(page || 0);
+    const result = await fetchInbox(page || 0);
+    // Cache messages for reputation tracking on delete
+    if (result.messages) store.set("_last_inbox_messages", result.messages.map((m) => ({ uid: m.uid, from: m.from })));
+    return result;
   } catch (e) {
     return { error: e.message };
   }
 });
 
-ipcMain.handle("fetch-message", async (_, uid) => {
+ipcMain.handle("fetch-message", async (_, uid, folder) => {
   try {
-    return await fetchMessage(uid);
+    const msg = await fetchMessage(uid, folder);
+    // Track sender reputation: opened
+    _trackSenderAction(msg.from?.address, "opened");
+    return msg;
   } catch (e) {
     return { error: e.message };
   }
@@ -1736,6 +2278,10 @@ ipcMain.handle("fetch-attachment", async (_, uid, filename) => {
 ipcMain.handle("send-mail", async (_, opts) => {
   try {
     await sendMail(opts);
+    // Track sender reputation: replied (the "to" address is who we're replying to)
+    if (opts.to) _trackSenderAction(opts.to, "replied");
+    // Scan for commitments in outgoing email
+    scanForCommitments({ to: opts.to, subject: opts.subject, text: opts.text || "" }).catch(() => {});
     return { ok: true };
   } catch (e) {
     return { error: e.message };
@@ -1744,6 +2290,10 @@ ipcMain.handle("send-mail", async (_, opts) => {
 
 ipcMain.handle("delete-message", async (_, uid) => {
   try {
+    // Track sender reputation before deleting
+    const msgs = store.get("_last_inbox_messages") || [];
+    const match = msgs.find((m) => m.uid === uid);
+    if (match) _trackSenderAction(match.from?.address, "deleted");
     await deleteMessage(uid);
     return { ok: true };
   } catch (e) {
@@ -2423,6 +2973,7 @@ ipcMain.handle("security-scan", async (_, uid) => {
       const lock = await client.getMailboxLock("INBOX");
       try {
         const raw = await client.download(String(uid), undefined, { uid: true });
+        if (!raw || !raw.content) throw new Error("Download failed");
         const chunks = []; for await (const c of raw.content) chunks.push(c);
         const parsed = await simpleParser(Buffer.concat(chunks));
         headers = parsed.headers ? Object.fromEntries(parsed.headers) : {};
@@ -2594,6 +3145,9 @@ ipcMain.handle("people-get-all", () => {
   for (const item of (store.get("sms_greylist") || [])) {
     people.push({ ...item, role: "muted" });
   }
+  for (const item of (store.get("daily_update_list") || [])) {
+    people.push({ ...item, role: "daily" });
+  }
   people.sort((a, b) => (a.name || a.address).localeCompare(b.name || b.address));
   return people;
 });
@@ -2624,13 +3178,21 @@ ipcMain.handle("people-add", (_, entry) => {
     const list = store.get("sms_greylist") || [];
     list.push(base);
     store.set("sms_greylist", list);
+  } else if (role === "daily") {
+    const list = store.get("daily_update_list") || [];
+    list.push(base);
+    store.set("daily_update_list", list);
+    // Remove from greylist if present (daily supersedes muted)
+    const grey = store.get("sms_greylist") || [];
+    const filtered = grey.filter((g) => !base.address || !g.address || !(g.address.includes(base.address) || base.address.includes(g.address)));
+    if (filtered.length !== grey.length) store.set("sms_greylist", filtered);
   }
   return { ok: true };
 });
 
 ipcMain.handle("people-change-role", (_, id, oldRole, newRole) => {
   // Remove from old list
-  const storeKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist" };
+  const storeKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
   const oldKey = storeKeys[oldRole];
   const newKey = storeKeys[newRole];
   if (!oldKey || !newKey) return { error: "Invalid role" };
@@ -2654,7 +3216,7 @@ ipcMain.handle("people-change-role", (_, id, oldRole, newRole) => {
 });
 
 ipcMain.handle("people-remove", (_, id, role) => {
-  const storeKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist" };
+  const storeKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
   const key = storeKeys[role];
   if (!key) return { error: "Invalid role" };
   let list = store.get(key) || [];
@@ -2664,7 +3226,7 @@ ipcMain.handle("people-remove", (_, id, role) => {
 });
 
 ipcMain.handle("people-toggle", (_, id, role) => {
-  const storeKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist" };
+  const storeKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
   const key = storeKeys[role];
   if (!key) return { error: "Invalid role" };
   const list = store.get(key) || [];
@@ -2698,6 +3260,7 @@ function _listCRUD(storeKey) {
 }
 const blacklistOps = _listCRUD("sms_blacklist");
 const greylistOps = _listCRUD("sms_greylist");
+const dailyUpdateOps = _listCRUD("daily_update_list");
 
 ipcMain.handle("blacklist-get", () => blacklistOps.get());
 ipcMain.handle("blacklist-add", (_, e) => blacklistOps.add(e));
@@ -2711,12 +3274,19 @@ ipcMain.handle("greylist-remove", (_, id) => greylistOps.remove(id));
 ipcMain.handle("greylist-toggle", (_, id) => greylistOps.toggle(id));
 ipcMain.handle("greylist-update", (_, id, u) => greylistOps.update(id, u));
 
+ipcMain.handle("daily-update-get", () => dailyUpdateOps.get());
+ipcMain.handle("daily-update-add", (_, e) => dailyUpdateOps.add(e));
+ipcMain.handle("daily-update-remove", (_, id) => dailyUpdateOps.remove(id));
+ipcMain.handle("daily-update-toggle", (_, id) => dailyUpdateOps.toggle(id));
+ipcMain.handle("daily-update-update", (_, id, u) => dailyUpdateOps.update(id, u));
+
 // Check which list a sender is on (for UI coloring and SMS logic)
 function _senderListStatus(fromAddress, fromName) {
   const addr = (fromAddress || "").toLowerCase();
   const name = (fromName || "").toLowerCase();
   const match = (list) => list.filter((w) => w.enabled).some((w) => w.address && (addr === w.address || addr.includes(w.address) || name.includes(w.address)));
   if (match(store.get("sms_blacklist") || [])) return "blacklist";
+  if (match(store.get("daily_update_list") || [])) return "daily";
   if (match(store.get("sms_greylist") || [])) return "greylist";
   if (match(store.get("ai_watchlist") || [])) return "watch";
   if (match(store.get("sms_whitelist") || [])) return "whitelist";
@@ -2903,10 +3473,12 @@ ipcMain.handle("ai-extract-event", async (_, email) => {
   "endTime": "HH:MM" (24h format, estimate 1h if not specified),
   "location": "full street address if mentioned, or venue name, or empty string",
   "description": "brief summary of what this is about",
-  "attendees": ["email@example.com"] (extract any email addresses mentioned)
+  "attendees": ["email@example.com"] (extract any email addresses mentioned),
+  "meetingLink": "full join URL for online meetings, or empty string"
 }
 For location: always include the FULL address with street, city, province/state, postal code if available in the email. If only a venue name is given (e.g. "Starbucks on Main"), include it as-is.
-If dates/times are relative (e.g. "next Tuesday", "tomorrow at 3pm"), convert to absolute. If no time specified, default to 09:00-10:00. If no date found, use tomorrow.`,
+If dates/times are relative (e.g. "next Tuesday", "tomorrow at 3pm"), convert to absolute. If no time specified, default to 09:00-10:00. If no date found, use tomorrow.
+For meetingLink: extract any Zoom, Teams, Google Meet, Webex, GoTo, or other video call URL. If only a meeting ID is mentioned (e.g. "Zoom ID: 123 456 7890"), construct the full join URL (e.g. "https://zoom.us/j/12345678900"). If a passcode is also mentioned, append it (e.g. "?pwd=abc123").`,
       messages: [{ role: "user", content: `From: ${email.from?.name || ""} <${email.from?.address || ""}>\nSubject: ${email.subject}\nDate: ${email.date}\n\n${content}` }],
     });
 
@@ -2914,6 +3486,14 @@ If dates/times are relative (e.g. "next Tuesday", "tomorrow at 3pm"), convert to
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return { error: "Could not extract event details" };
     const event = JSON.parse(jsonMatch[0]);
+
+    // Also try regex extraction if AI didn't find a link
+    if (!event.meetingLink) event.meetingLink = _extractMeetingLink(content);
+    // Include meeting link in description for calendar event
+    if (event.meetingLink) {
+      event.description = (event.description || "") + `\n\nJoin meeting: ${event.meetingLink}`;
+      if (!event.location) event.location = event.meetingLink;
+    }
 
     // Add Google Maps link if location is present and specific
     if (event.location && event.location.length > 3) {
@@ -3214,7 +3794,7 @@ ipcMain.handle("vip-meetings-set", (_, enabled) => {
 ipcMain.handle("vip-options-get", () => {
   return {
     detectMeetings: store.get("vip_detect_meetings") !== false,
-    autoCalendar: store.get("vip_auto_calendar") === true,
+    autoCalendar: store.get("vip_auto_calendar") !== false,
     aiReview: store.get("vip_ai_review") === true,
   };
 });
@@ -3334,7 +3914,51 @@ async function sendMorningBriefing() {
       } catch (e) { calendarInfo = ""; }
     }
 
-    const briefing = `Morning: ${unread} unread${vipCount ? `, ${vipCount} VIP` : ""}${pending ? `, ${pending} meetings pending` : ""}${calendarInfo ? `. ${calendarInfo}` : ""}`;
+    // Daily Update digest — summarize emails from daily update senders
+    let dailyDigest = "";
+    const dailyList = (store.get("daily_update_list") || []).filter((d) => d.enabled);
+    if (dailyList.length > 0) {
+      const dailyMatches = [];
+      for (const msg of msgs) {
+        const addr = (msg.from?.address || "").toLowerCase();
+        const name = (msg.from?.name || "").toLowerCase();
+        if (dailyList.some((d) => d.address && (addr === d.address || addr.includes(d.address) || name.includes(d.address)))) {
+          dailyMatches.push(msg);
+        }
+      }
+      if (dailyMatches.length > 0) {
+        // Group by sender/domain
+        const groups = {};
+        for (const m of dailyMatches) {
+          const key = m.from?.name || m.from?.address || "Unknown";
+          if (!groups[key]) groups[key] = [];
+          groups[key].push(m.subject || "(no subject)");
+        }
+        // AI summarize if available, otherwise just list
+        if (apiKey) {
+          try {
+            const client = getAnthropicClient();
+            const listing = Object.entries(groups).map(([sender, subjects]) =>
+              `${sender}:\n${subjects.map((s) => `  - ${s}`).join("\n")}`
+            ).join("\n");
+            const resp = await client.messages.create({
+              model: "claude-haiku-4-5-20251001",
+              max_tokens: 200,
+              system: `Summarize these daily update emails in 2-4 bullet points. Focus on: deliveries, invoices, shipping status, order updates, account activity. Be concise. Use plain text, no markdown.`,
+              messages: [{ role: "user", content: listing }],
+            });
+            dailyDigest = `\nDaily updates:\n${(resp.content[0]?.text || "").trim()}`;
+          } catch (e) {
+            // Fallback: just list counts
+            dailyDigest = `\nDaily updates: ${Object.entries(groups).map(([k, v]) => `${k} (${v.length})`).join(", ")}`;
+          }
+        } else {
+          dailyDigest = `\nDaily updates: ${Object.entries(groups).map(([k, v]) => `${k} (${v.length})`).join(", ")}`;
+        }
+      }
+    }
+
+    const briefing = `Morning: ${unread} unread${vipCount ? `, ${vipCount} VIP` : ""}${pending ? `, ${pending} meetings pending` : ""}${calendarInfo ? `. ${calendarInfo}` : ""}${dailyDigest}`;
     await sendAlert(briefing);
     store.set("briefing_sent_date", today);
     console.log("Morning briefing sent");
@@ -3358,77 +3982,476 @@ async function detectDeadline(msg) {
   } catch (e) { return null; }
 }
 
+// ── Sender Reputation Learning ──────────────────────────────────────────
+function _trackSenderAction(fromAddress, action) {
+  if (!fromAddress) return;
+  const addr = fromAddress.toLowerCase();
+  const rep = store.get("sender_reputation") || {};
+  if (!rep[addr]) rep[addr] = { opened: 0, replied: 0, deleted: 0, ignored: 0, firstSeen: new Date().toISOString() };
+  rep[addr][action] = (rep[addr][action] || 0) + 1;
+  rep[addr].lastAction = action;
+  rep[addr].lastDate = new Date().toISOString();
+  store.set("sender_reputation", rep);
+}
+
+function checkReputationSuggestions() {
+  const rep = store.get("sender_reputation") || {};
+  const suggestions = [];
+  const existing = new Set();
+  // Collect all addresses already on a list
+  for (const list of ["sms_whitelist", "ai_watchlist", "sms_blacklist", "sms_greylist", "daily_update_list"]) {
+    for (const item of (store.get(list) || [])) existing.add(item.address);
+  }
+
+  for (const [addr, stats] of Object.entries(rep)) {
+    if (existing.has(addr)) continue; // already managed
+    const total = (stats.opened || 0) + (stats.replied || 0) + (stats.deleted || 0) + (stats.ignored || 0);
+    if (total < 5) continue; // not enough data
+
+    const deleteRate = (stats.deleted || 0) / total;
+    const replyRate = (stats.replied || 0) / total;
+    const openRate = (stats.opened || 0) / total;
+    const ignoreRate = (stats.ignored || 0) / total;
+
+    if (deleteRate > 0.7 && total >= 5) {
+      suggestions.push({ addr, action: "blocked", reason: `Deleted ${Math.round(deleteRate * 100)}% of ${total} emails` });
+    } else if (replyRate > 0.5 && total >= 3) {
+      suggestions.push({ addr, action: "watch", reason: `Replied to ${Math.round(replyRate * 100)}% of ${total} emails` });
+    } else if (ignoreRate > 0.8 && total >= 8) {
+      suggestions.push({ addr, action: "muted", reason: `Ignored ${Math.round(ignoreRate * 100)}% of ${total} emails` });
+    }
+  }
+
+  return suggestions;
+}
+
+// ── Commitment Tracking ─────────────────────────────────────────────────
+async function scanForCommitments(sentMsg) {
+  if (!store.get("anthropic_api_key")) return;
+  if (!store.get("low_touch_enabled")) return;
+  try {
+    const client = getAnthropicClient();
+    const today = new Date().toISOString().split("T")[0];
+    const resp = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 200,
+      system: `Analyze this sent email for commitments or promises the sender made. Today is ${today}. Respond with ONLY valid JSON:
+{"commitments": [{"text": "what was promised", "dueDate": "YYYY-MM-DD or null", "to": "recipient name/email"}]}
+A commitment is: sending a document, following up, providing information, scheduling something, completing a task, getting back to someone.
+If no commitments found, return {"commitments": []}.`,
+      messages: [{ role: "user", content: `To: ${sentMsg.to}\nSubject: ${sentMsg.subject}\n\n${sentMsg.text || ""}` }],
+    });
+    const text = (resp.content[0]?.text || "").trim();
+    const parsed = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || '{"commitments":[]}');
+    if (parsed.commitments?.length > 0) {
+      const commitments = store.get("tracked_commitments") || [];
+      for (const c of parsed.commitments) {
+        commitments.push({
+          id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
+          text: c.text,
+          dueDate: c.dueDate || null,
+          to: c.to || sentMsg.to,
+          subject: sentMsg.subject,
+          created: new Date().toISOString(),
+          fulfilled: false,
+        });
+      }
+      if (commitments.length > 50) commitments.splice(0, commitments.length - 50);
+      store.set("tracked_commitments", commitments);
+      console.log(`Commitments tracked: ${parsed.commitments.length} from "${sentMsg.subject}"`);
+    }
+  } catch (e) { console.error("Commitment scan failed:", e.message); }
+}
+
+async function scanIncomingCommitments(msg, bodyText) {
+  if (!store.get("anthropic_api_key")) return;
+  if (!store.get("low_touch_enabled")) return;
+  if (!bodyText || bodyText.length < 20) return;
+  try {
+    const client = getAnthropicClient();
+    const today = new Date().toISOString().split("T")[0];
+    const resp = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 200,
+      system: `Analyze this incoming email for commitments or promises the SENDER made to the recipient. Today is ${today}. Respond with ONLY valid JSON:
+{"commitments": [{"text": "what they promised", "dueDate": "YYYY-MM-DD or null"}]}
+A commitment is: promising to send a document, to follow up, to provide information, to schedule something, to complete a task, to get back to someone, to deliver something, to call back.
+Only extract clear, specific promises — not vague pleasantries like "let's keep in touch".
+If no commitments found, return {"commitments": []}.`,
+      messages: [{ role: "user", content: `From: ${msg.from?.name || ""} <${msg.from?.address || ""}>\nSubject: ${msg.subject}\n\n${bodyText.substring(0, 1500)}` }],
+    });
+    const text = (resp.content[0]?.text || "").trim();
+    const parsed = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || '{"commitments":[]}');
+    if (parsed.commitments?.length > 0) {
+      const commitments = store.get("tracked_commitments") || [];
+      for (const c of parsed.commitments) {
+        commitments.push({
+          id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
+          text: c.text,
+          dueDate: c.dueDate || null,
+          from: msg.from?.address || msg.from?.name || "Unknown",
+          to: "you",
+          direction: "incoming",
+          subject: msg.subject,
+          created: new Date().toISOString(),
+          fulfilled: false,
+        });
+      }
+      if (commitments.length > 100) commitments.splice(0, commitments.length - 100);
+      store.set("tracked_commitments", commitments);
+      console.log(`Incoming commitments tracked: ${parsed.commitments.length} from ${msg.from?.address} re: "${msg.subject}"`);
+    }
+  } catch (e) { console.error("Incoming commitment scan failed:", e.message); }
+}
+
+async function checkCommitments() {
+  if (!store.get("low_touch_enabled")) return;
+  const commitments = store.get("tracked_commitments") || [];
+  if (!commitments.length) return;
+  const smsTo = store.get("sms_to");
+  const today = new Date().toISOString().split("T")[0];
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().split("T")[0];
+  const nudged = new Set(store.get("commitment_nudged") || []);
+  const alerts = [];
+
+  for (const c of commitments) {
+    if (c.fulfilled || nudged.has(c.id)) continue;
+
+    if (c.direction === "incoming") {
+      // Incoming: someone promised US something — check if they followed through
+      if (c.dueDate && c.dueDate <= tomorrow) {
+        const overdue = c.dueDate < today;
+        alerts.push(`${overdue ? "OWED (OVERDUE)" : "OWED"}: ${c.from} promised "${c.text}"${c.dueDate ? ` by ${c.dueDate}` : ""}`);
+        nudged.add(c.id);
+      }
+      if (!c.dueDate && (Date.now() - new Date(c.created).getTime()) > 5 * 86400000) {
+        alerts.push(`OWED: ${c.from} promised "${c.text}" (${Math.round((Date.now() - new Date(c.created).getTime()) / 86400000)} days ago)`);
+        nudged.add(c.id);
+      }
+    } else {
+      // Outgoing: WE promised something — nudge before deadline
+      if (c.dueDate && c.dueDate <= tomorrow) {
+        const overdue = c.dueDate < today;
+        alerts.push(`${overdue ? "OVERDUE" : "DUE"}: "${c.text}" to ${c.to}${c.dueDate ? ` (${c.dueDate})` : ""}`);
+        nudged.add(c.id);
+      }
+      if (!c.dueDate && (Date.now() - new Date(c.created).getTime()) > 3 * 86400000) {
+        alerts.push(`PENDING: "${c.text}" to ${c.to} (${Math.round((Date.now() - new Date(c.created).getTime()) / 86400000)} days ago)`);
+        nudged.add(c.id);
+      }
+    }
+  }
+
+  if (alerts.length > 0 && smsTo) {
+    await sendAlert(`Commitments:\n${alerts.join("\n")}`);
+  }
+
+  const nudgeArr = [...nudged];
+  if (nudgeArr.length > 200) nudgeArr.splice(0, nudgeArr.length - 200);
+  store.set("commitment_nudged", nudgeArr);
+}
+
+// ── Smart Digest Email ──────────────────────────────────────────────────
+async function sendSmartDigest() {
+  if (!store.get("low_touch_enabled")) return;
+  const digestEmail = store.get("action_email_address") || store.get("alert_email_to") || "";
+  if (!digestEmail) return;
+  if (!store.get("anthropic_api_key")) return;
+
+  const today = new Date().toDateString();
+  if (store.get("digest_sent_date") === today) return;
+
+  const hour = new Date().getHours();
+  const digestHour = store.get("digest_hour") || 7;
+  if (hour < digestHour) return;
+
+  try {
+    const result = await fetchInbox(0, 100);
+    const msgs = result.messages || [];
+    if (!msgs.length) return;
+
+    // Categorize messages
+    const unread = msgs.filter((m) => !m.seen);
+    const needsAction = [];
+    const fyi = [];
+    const autoHandled = [];
+
+    const processed = new Set(store.get("low_touch_processed") || []);
+
+    for (const m of msgs.slice(0, 50)) {
+      const status = _senderListStatus(m.from?.address, m.from?.name);
+      if (status === "whitelist" || status === "watch") {
+        needsAction.push(m);
+      } else if (processed.has(m.uid)) {
+        autoHandled.push(m);
+      } else if (!m.seen) {
+        fyi.push(m);
+      }
+    }
+
+    // AI summarize each section
+    const aiClient = getAnthropicClient();
+    const sections = [];
+
+    if (needsAction.length > 0) {
+      const list = needsAction.slice(0, 10).map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`).join("\n");
+      try {
+        const resp = await aiClient.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 300,
+          system: "Summarize these emails that need the user's attention. 1-2 sentences per email. Be concise.",
+          messages: [{ role: "user", content: list }],
+        });
+        sections.push({ title: "Needs Your Attention", color: "#ef4444", items: (resp.content[0]?.text || list).split("\n").filter(Boolean) });
+      } catch (e) { sections.push({ title: "Needs Your Attention", color: "#ef4444", items: needsAction.map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`) }); }
+    }
+
+    if (fyi.length > 0) {
+      sections.push({ title: "FYI — New & Unread", color: "#f59e0b", items: fyi.slice(0, 15).map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`) });
+    }
+
+    if (autoHandled.length > 0) {
+      sections.push({ title: "Auto-Handled by GideonMail", color: "#22c55e", items: autoHandled.slice(0, 10).map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`) });
+    }
+
+    // Commitments due
+    const commitments = (store.get("tracked_commitments") || []).filter((c) => !c.fulfilled);
+    const outgoing = commitments.filter((c) => c.direction !== "incoming");
+    const incoming = commitments.filter((c) => c.direction === "incoming");
+    if (outgoing.length > 0) {
+      sections.push({ title: "Your Promises (Outgoing)", color: "#a78bfa", items: outgoing.slice(0, 5).map((c) => `"${c.text}" to ${c.to}${c.dueDate ? ` — due ${c.dueDate}` : ""}`) });
+    }
+    if (incoming.length > 0) {
+      sections.push({ title: "Owed to You (Incoming)", color: "#f472b6", items: incoming.slice(0, 5).map((c) => `${c.from}: "${c.text}"${c.dueDate ? ` — due ${c.dueDate}` : ""}`) });
+    }
+
+    // Reputation suggestions
+    const repSuggestions = checkReputationSuggestions();
+    if (repSuggestions.length > 0) {
+      sections.push({ title: "Sender Suggestions", color: "#06b6d4", items: repSuggestions.slice(0, 5).map((s) => `${s.addr} → ${s.action}: ${s.reason}`) });
+    }
+
+    if (!sections.length) return;
+
+    // Build HTML
+    const sectionHtml = sections.map((s) => `
+      <div style="margin-bottom:16px">
+        <div style="font-size:13px;font-weight:700;color:${s.color};padding:8px 0;border-bottom:1px solid ${s.color}33">${s.title} (${s.items.length})</div>
+        ${s.items.map((item) => `<div style="padding:4px 0;font-size:12px;color:#e4e4e8;border-bottom:1px solid #2a2a32">${item}</div>`).join("")}
+      </div>
+    `).join("");
+
+    const calInfo = sections.find((s) => s.title.includes("Calendar"));
+    const html = `
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#111113;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <div style="max-width:600px;margin:20px auto;background:#1a1a1f;border-radius:12px;overflow:hidden;border:1px solid #2a2a32">
+    <div style="background:linear-gradient(135deg,#7c6cff,#6355e0);padding:20px 24px">
+      <div style="color:#fff;font-size:20px;font-weight:700">GideonMail Daily Digest</div>
+      <div style="color:#e0d4ff;font-size:12px;margin-top:4px">${new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} — ${unread.length} unread</div>
+    </div>
+    <div style="padding:20px 24px">
+      ${sectionHtml}
+      <div style="color:#55555e;font-size:10px;text-align:center;margin-top:20px;padding-top:12px;border-top:1px solid #2a2a32">
+        Generated by GideonMail Low Touch Autopilot
+      </div>
+    </div>
+  </div>
+</body></html>`;
+
+    const cfg = store.get("account");
+    if (cfg) {
+      const transport = nodemailer.createTransport({
+        host: cfg.smtpHost, port: cfg.smtpPort || 587,
+        secure: cfg.smtpSecure || false,
+        auth: { user: cfg.username, pass: cfg.password },
+        tls: { rejectUnauthorized: false },
+      });
+      await transport.sendMail({
+        from: `GideonMail <${cfg.email || cfg.username}>`,
+        to: digestEmail,
+        subject: `Daily Digest: ${unread.length} unread, ${needsAction.length} need attention`,
+        html,
+        text: sections.map((s) => `${s.title}:\n${s.items.join("\n")}`).join("\n\n"),
+      });
+      store.set("digest_sent_date", today);
+      console.log("Smart digest sent");
+    }
+  } catch (e) { console.error("Smart digest failed:", e.message); }
+}
+
 // ── Auto-Task for Watch senders ─────────────────────────────────────────
-async function autoCreateTask(msg, eventTitle) {
+async function autoCreateTask(msg, eventTitle, emailBodyText, meetingLinkOverride) {
   if (!googleAuth?.isConnected) return;
   try {
     const token = await googleAuth.getToken();
     const calId = store.get("google_calendar_id") || "primary";
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-    // Find next available 30-min slot (search next 3 days, business hours)
-    const todayStr = new Date().toISOString().split("T")[0];
-    const params = new URLSearchParams({
-      timeMin: new Date().toISOString(),
-      timeMax: new Date(Date.now() + 3 * 86400000).toISOString(),
-      singleEvents: "true", orderBy: "startTime",
-    });
-
     const https = require("https");
-    const res = await new Promise((resolve, reject) => {
-      const req = https.request({
-        hostname: "www.googleapis.com",
-        path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?${params}`,
-        headers: { "Authorization": `Bearer ${token}` },
-      }, (r) => { let d = ""; r.on("data", (c) => { d += c; }); r.on("end", () => { try { resolve(JSON.parse(d)); } catch (e) { resolve({}); } }); });
-      req.on("error", reject);
-      req.end();
-    });
 
-    // Find first free 30-min slot between 9am-5pm
-    const events = (res.items || []).map((e) => ({
-      start: new Date(e.start?.dateTime || e.start?.date),
-      end: new Date(e.end?.dateTime || e.end?.date),
-    }));
-
+    // Try AI extraction first if we have the email body and an API key
     let slotStart = null;
-    for (let day = 0; day < 3; day++) {
-      const d = new Date(Date.now() + day * 86400000);
-      const schedStart = store.get("sched_start_hour") || 9;
-      const schedEnd = store.get("sched_end_hour") || 17;
-      for (let h = schedStart; h < schedEnd; h++) {
-        const candidate = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, 0, 0);
-        if (candidate < new Date()) continue;
-        const candidateEnd = new Date(candidate.getTime() + 30 * 60000);
-        const conflict = events.some((e) => candidate < e.end && candidateEnd > e.start);
-        if (!conflict) { slotStart = candidate; break; }
+    let slotEnd = null;
+    let location = "";
+    let onlineMeetingLink = meetingLinkOverride || "";
+    let title = eventTitle || `Review: ${msg.subject}`;
+
+    if (emailBodyText && store.get("anthropic_api_key")) {
+      try {
+        const aiClient = getAnthropicClient();
+        const today = new Date().toISOString().split("T")[0];
+        const resp = await aiClient.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 512,
+          system: `Extract calendar event details from this email. Today is ${today}. Return ONLY valid JSON:
+{"title": "event title", "date": "YYYY-MM-DD", "startTime": "HH:MM", "endTime": "HH:MM", "location": "venue or address or empty string", "meetingLink": "full URL or constructed from meeting ID or empty string"}
+If dates are relative (e.g. "next Thursday"), convert to absolute. If no time specified, default to 12:00-13:00. If no date found, use tomorrow.
+For meetingLink: extract any Zoom, Teams, Google Meet, Webex, GoTo, or other video call URL. If only a meeting ID is mentioned (e.g. "Zoom ID: 123 456 7890"), construct the full join URL (e.g. "https://zoom.us/j/12345678900"). If a passcode is also present, append it (e.g. "?pwd=abc123").`,
+          messages: [{ role: "user", content: `From: ${msg.from?.name || ""} <${msg.from?.address || ""}>\nSubject: ${msg.subject}\n\n${emailBodyText}` }],
+        });
+        const text = (resp.content[0]?.text || "").trim();
+        const parsed = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || "{}");
+        if (parsed.date && parsed.startTime) {
+          slotStart = new Date(`${parsed.date}T${parsed.startTime}:00`);
+          const endTime = parsed.endTime || parsed.startTime.replace(/:\d+/, (m) => `:${(parseInt(m.slice(1)) + 60) % 60}`);
+          slotEnd = new Date(`${parsed.date}T${endTime}:00`);
+          if (slotEnd <= slotStart) slotEnd = new Date(slotStart.getTime() + 60 * 60000);
+          location = parsed.location || "";
+          if (parsed.title) title = parsed.title;
+          if (parsed.meetingLink && !onlineMeetingLink) onlineMeetingLink = parsed.meetingLink;
+          console.log(`AI extracted event: "${title}" on ${parsed.date} at ${parsed.startTime}-${endTime}, location="${location}", link="${onlineMeetingLink}"`);
+        }
+      } catch (e) { console.error("AI event extraction:", e.message); }
+    }
+
+    // Also try regex extraction if AI didn't find a link
+    if (!onlineMeetingLink && emailBodyText) {
+      onlineMeetingLink = _extractMeetingLink(emailBodyText);
+    }
+
+    // Fallback: find next available 30-min slot if AI extraction didn't work
+    if (!slotStart) {
+      const params = new URLSearchParams({
+        timeMin: new Date().toISOString(),
+        timeMax: new Date(Date.now() + 3 * 86400000).toISOString(),
+        singleEvents: "true", orderBy: "startTime",
+      });
+
+      const res = await new Promise((resolve, reject) => {
+        const req = https.request({
+          hostname: "www.googleapis.com",
+          path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?${params}`,
+          headers: { "Authorization": `Bearer ${token}` },
+        }, (r) => { let d = ""; r.on("data", (c) => { d += c; }); r.on("end", () => { try { resolve(JSON.parse(d)); } catch (e) { resolve({}); } }); });
+        req.on("error", reject);
+        req.end();
+      });
+
+      const events = (res.items || []).map((e) => ({
+        start: new Date(e.start?.dateTime || e.start?.date),
+        end: new Date(e.end?.dateTime || e.end?.date),
+      }));
+
+      for (let day = 0; day < 3; day++) {
+        const d = new Date(Date.now() + day * 86400000);
+        const schedStart = store.get("sched_start_hour") || 9;
+        const schedEnd = store.get("sched_end_hour") || 17;
+        for (let h = schedStart; h < schedEnd; h++) {
+          const candidate = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, 0, 0);
+          if (candidate < new Date()) continue;
+          const candidateEnd = new Date(candidate.getTime() + 30 * 60000);
+          const conflict = events.some((e) => candidate < e.end && candidateEnd > e.start);
+          if (!conflict) { slotStart = candidate; slotEnd = candidateEnd; break; }
+        }
+        if (slotStart) break;
       }
-      if (slotStart) break;
     }
 
     if (!slotStart) return;
-    const slotEnd = new Date(slotStart.getTime() + 30 * 60000);
+    if (!slotEnd) slotEnd = new Date(slotStart.getTime() + 30 * 60000);
 
-    const body = JSON.stringify({
-      summary: eventTitle || `Review: ${msg.subject}`,
-      description: `From: ${msg.from?.name || ""} <${msg.from?.address || ""}>\nAuto-created by GideonMail`,
+    // ── Reschedule detection: check for existing event from same sender ──
+    let existingEventId = null;
+    let existingEvent = null;
+    const senderName = (msg.from?.name || "").toLowerCase();
+    const senderAddr = (msg.from?.address || "").toLowerCase();
+    try {
+      // Search future events for ones created by GideonMail from this sender
+      const searchParams = new URLSearchParams({
+        timeMin: new Date().toISOString(),
+        timeMax: new Date(Date.now() + 30 * 86400000).toISOString(),
+        singleEvents: "true", orderBy: "startTime", maxResults: "50",
+      });
+      const searchRes = await new Promise((resolve, reject) => {
+        const req = https.request({
+          hostname: "www.googleapis.com",
+          path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?${searchParams}`,
+          headers: { "Authorization": `Bearer ${token}` },
+        }, (r) => { let d = ""; r.on("data", (c) => { d += c; }); r.on("end", () => { try { resolve(JSON.parse(d)); } catch (e) { resolve({}); } }); });
+        req.on("error", reject);
+        req.end();
+      });
+
+      for (const ev of (searchRes.items || [])) {
+        const desc = (ev.description || "").toLowerCase();
+        const summary = (ev.summary || "").toLowerCase();
+        // Match if event was auto-created by GideonMail AND involves the same sender
+        if (desc.includes("auto-created by gideonmail") &&
+            (desc.includes(senderAddr) || (senderName && summary.includes(senderName)))) {
+          existingEventId = ev.id;
+          existingEvent = { summary: ev.summary, start: ev.start?.dateTime || ev.start?.date, end: ev.end?.dateTime || ev.end?.date, location: ev.location || "" };
+          console.log(`Reschedule: found existing event "${ev.summary}" (${ev.id}) from same sender`);
+          break;
+        }
+      }
+    } catch (e) { console.error("Reschedule search:", e.message); }
+
+    let description = `From: ${msg.from?.name || ""} <${msg.from?.address || ""}>\nAuto-created by GideonMail`;
+    if (onlineMeetingLink) description += `\n\nJoin meeting: ${onlineMeetingLink}`;
+
+    const eventBody = {
+      summary: title,
+      description,
       start: { dateTime: slotStart.toISOString(), timeZone: timezone },
       end: { dateTime: slotEnd.toISOString(), timeZone: timezone },
-    });
+    };
+    if (location) eventBody.location = location;
+    // For online meetings, put the link in the location if no physical location
+    if (onlineMeetingLink && !location) eventBody.location = onlineMeetingLink;
 
-    await new Promise((resolve) => {
-      const req = https.request({
-        hostname: "www.googleapis.com",
-        path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?sendUpdates=none`,
-        method: "POST",
-        headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
-      }, (r) => { let d = ""; r.on("data", (c) => { d += c; }); r.on("end", () => resolve(d)); });
-      req.on("error", () => resolve(null));
-      req.write(body); req.end();
-    });
-
-    console.log(`Auto-task: scheduled "${eventTitle || msg.subject}" at ${slotStart.toLocaleTimeString()}`);
-  } catch (e) { console.error("Auto-task failed:", e.message); }
+    if (existingEventId) {
+      // PATCH the existing event (reschedule)
+      const body = JSON.stringify(eventBody);
+      await new Promise((resolve) => {
+        const req = https.request({
+          hostname: "www.googleapis.com",
+          path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events/${encodeURIComponent(existingEventId)}?sendUpdates=none`,
+          method: "PATCH",
+          headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+        }, (r) => { let d = ""; r.on("data", (c) => { d += c; }); r.on("end", () => resolve(d)); });
+        req.on("error", () => resolve(null));
+        req.write(body); req.end();
+      });
+      console.log(`Auto-task: RESCHEDULED "${title}" to ${slotStart.toLocaleString()}`);
+      return { rescheduled: true, title, start: slotStart, end: slotEnd, location, meetingLink: onlineMeetingLink, oldEvent: existingEvent };
+    } else {
+      // POST a new event
+      const body = JSON.stringify(eventBody);
+      await new Promise((resolve) => {
+        const req = https.request({
+          hostname: "www.googleapis.com",
+          path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?sendUpdates=none`,
+          method: "POST",
+          headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+        }, (r) => { let d = ""; r.on("data", (c) => { d += c; }); r.on("end", () => resolve(d)); });
+        req.on("error", () => resolve(null));
+        req.write(body); req.end();
+      });
+      console.log(`Auto-task: scheduled "${title}" at ${slotStart.toLocaleString()}`);
+      return { rescheduled: false, title, start: slotStart, end: slotEnd, location, meetingLink: onlineMeetingLink };
+    }
+  } catch (e) { console.error("Auto-task failed:", e.message); return null; }
 }
 
 app.whenReady().then(() => {
@@ -3443,10 +4466,18 @@ app.whenReady().then(() => {
     }).catch(() => {});
   }
 
-  // Morning briefing check every 15 min
-  setInterval(() => sendMorningBriefing().catch(() => {}), 900000);
+  // Morning briefing + smart digest + commitment check every 15 min
+  setInterval(() => {
+    sendMorningBriefing().catch(() => {});
+    sendSmartDigest().catch(() => {});
+    checkCommitments().catch(() => {});
+  }, 900000);
   // Check immediately too
-  setTimeout(() => sendMorningBriefing().catch(() => {}), 10000);
+  setTimeout(() => {
+    sendMorningBriefing().catch(() => {});
+    sendSmartDigest().catch(() => {});
+    checkCommitments().catch(() => {});
+  }, 10000);
 });
 
 app.on("window-all-closed", () => {

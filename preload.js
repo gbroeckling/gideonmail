@@ -5,7 +5,7 @@ contextBridge.exposeInMainWorld("gideon", {
   saveAccount:     (cfg)        => ipcRenderer.invoke("save-account", cfg),
   testConnection:  ()           => ipcRenderer.invoke("test-connection"),
   fetchInbox:      (page)       => ipcRenderer.invoke("fetch-inbox", page),
-  fetchMessage:    (uid)        => ipcRenderer.invoke("fetch-message", uid),
+  fetchMessage:    (uid, folder) => ipcRenderer.invoke("fetch-message", uid, folder),
   fetchAttachment: (uid, name)  => ipcRenderer.invoke("fetch-attachment", uid, name),
   sendMail:        (opts)       => ipcRenderer.invoke("send-mail", opts),
   deleteMessage:   (uid)        => ipcRenderer.invoke("delete-message", uid),
@@ -42,9 +42,16 @@ contextBridge.exposeInMainWorld("gideon", {
   autocheckGet:  () => ipcRenderer.invoke("autocheck-get"),
   autocheckSave: (c) => ipcRenderer.invoke("autocheck-save", c),
 
+  // Reputation & Commitments
+  reputationGet:        ()   => ipcRenderer.invoke("reputation-get"),
+  reputationSuggestions:()   => ipcRenderer.invoke("reputation-suggestions"),
+  commitmentsGet:       ()   => ipcRenderer.invoke("commitments-get"),
+  commitmentsFulfill:   (id) => ipcRenderer.invoke("commitments-fulfill", id),
+
   // Low Touch
   lowTouchGet: () => ipcRenderer.invoke("low-touch-get"),
   lowTouchSet: (cfg) => ipcRenderer.invoke("low-touch-set", cfg),
+  lowTouchLearnVoice: () => ipcRenderer.invoke("low-touch-learn-voice"),
 
   // Action email relay
   actionEmailGet:  () => ipcRenderer.invoke("action-email-get"),
@@ -103,6 +110,13 @@ contextBridge.exposeInMainWorld("gideon", {
   greylistToggle:  (id)      => ipcRenderer.invoke("greylist-toggle", id),
   greylistUpdate:  (id, u)   => ipcRenderer.invoke("greylist-update", id, u),
   senderStatusBulk:(msgs)    => ipcRenderer.invoke("sender-list-status-bulk", msgs),
+
+  // Daily Update list
+  dailyUpdateGet:    ()        => ipcRenderer.invoke("daily-update-get"),
+  dailyUpdateAdd:    (e)       => ipcRenderer.invoke("daily-update-add", e),
+  dailyUpdateRemove: (id)      => ipcRenderer.invoke("daily-update-remove", id),
+  dailyUpdateToggle: (id)      => ipcRenderer.invoke("daily-update-toggle", id),
+  dailyUpdateUpdate: (id, u)   => ipcRenderer.invoke("daily-update-update", id, u),
 
   // Conversation Alerts
   convoGetConfig:  ()    => ipcRenderer.invoke("convo-get-config"),

@@ -62,7 +62,7 @@ function bindEvents() {
   $("#lowTouchToggle").addEventListener("click", async () => {
     const cfg = await gideon.lowTouchGet();
     const newState = !cfg.enabled;
-    if (newState && !confirm("Enable Low Touch mode?\n\nThis lets AI autonomously:\n• Delete spam\n• Archive newsletters\n• File receipts & notifications\n• Draft replies for your approval\n• Create calendar events from meetings\n• Alert you about deadlines\n• Nudge you about unanswered emails\n\nYou stay in control via action emails on your phone.")) return;
+    if (newState && !confirm("Enable Low Touch mode? (EXPERIMENTAL)\n\nThis lets AI autonomously:\n• Delete spam\n• Archive newsletters\n• File receipts & notifications\n• Draft replies for your approval\n• Create calendar events from meetings\n• Alert you about deadlines\n• Nudge you about unanswered emails\n\nYou stay in control via action emails on your phone.")) return;
     await gideon.lowTouchSet({ enabled: newState });
     updateLowTouchUI();
   });
@@ -612,7 +612,7 @@ Only output the reply body, no subject line.`,
     tab.addEventListener("click", () => {
       $$(".rules-tab").forEach((t) => t.classList.remove("active"));
       tab.classList.add("active");
-      const sections = { people: "rulesPeople", instructions: "rulesInstructions", security: "rulesSecurity", conversations: "rulesConversations", sms: "rulesSms" };
+      const sections = { people: "rulesPeople", instructions: "rulesInstructions", security: "rulesSecurity", conversations: "rulesConversations", sms: "rulesSms", lowtouch: "rulesLowtouch" };
       Object.values(sections).forEach((id) => { const el = $(`#${id}`); if (el) el.style.display = "none"; });
       const target = sections[tab.dataset.tab];
       if (target) $(`#${target}`).style.display = "block";
@@ -666,6 +666,24 @@ Only output the reply body, no subject line.`,
     await saveRulesSettings();
     $("#rulesSave").textContent = "Saved!";
     setTimeout(() => { $("#rulesSave").textContent = "Save All"; }, 1500);
+  });
+
+  // Learn Voice button
+  $("#btnLearnVoice").addEventListener("click", async () => {
+    const btn = $("#btnLearnVoice");
+    btn.textContent = "Learning...";
+    btn.disabled = true;
+    try {
+      const res = await gideon.lowTouchLearnVoice();
+      if (res.profile) {
+        $("#voiceProfilePreview").textContent = res.profile;
+        $("#voiceProfilePreview").style.display = "block";
+        btn.textContent = "Voice Learned!";
+      } else {
+        btn.textContent = res.error || "No sent emails found";
+      }
+    } catch (e) { btn.textContent = "Failed"; }
+    setTimeout(() => { btn.textContent = "Learn My Voice Now"; btn.disabled = false; }, 3000);
   });
 
   $("#cfgConvoTest").addEventListener("click", async () => {
@@ -789,7 +807,10 @@ async function loadFolders() {
   for (const f of sorted) {
     const div = document.createElement("div");
     div.className = "folder-item" + (f.path === currentFolder ? " active" : "");
-    div.innerHTML = `<span>${escHtml(f.name)}</span>`;
+    const hasUnread = f.unseen > 0;
+    const nameColor = hasUnread ? "color:#a78bfa;font-weight:600" : "";
+    const badge = hasUnread ? ` <span style="color:#a78bfa;font-size:10px;opacity:0.8">(${f.unseen})</span>` : "";
+    div.innerHTML = `<span style="${nameColor}">${escHtml(f.name)}${badge}</span>`;
     div.addEventListener("click", () => {
       currentFolder = f.path;
       currentPage = 0;
@@ -884,15 +905,18 @@ async function renderMessageList() {
       div.style.cssText = "background:#1a0a0a;color:#fecaca;border-left:3px solid #f06060";
     } else if (status === "greylist") {
       div.style.cssText = "background:#1a1a1f;color:#7dd3fc;border-left:3px solid #38bdf8";
+    } else if (status === "daily") {
+      div.style.cssText = "background:#0a1a12;color:#86efac;border-left:3px solid #22c55e";
     }
 
-    const subjectColor = status === "whitelist" ? "color:#2a2a32" : status === "watch" ? "color:#fbbf24" : status === "blacklist" ? "color:#fca5a5" : status === "greylist" ? "color:#7dd3fc" : "";
-    const fromColor = status === "whitelist" ? "color:#444" : status === "watch" ? "color:#ff9f43" : status === "greylist" ? "color:#38bdf8" : "";
+    const subjectColor = status === "whitelist" ? "color:#2a2a32" : status === "watch" ? "color:#fbbf24" : status === "blacklist" ? "color:#fca5a5" : status === "greylist" ? "color:#7dd3fc" : status === "daily" ? "color:#86efac" : "";
+    const fromColor = status === "whitelist" ? "color:#444" : status === "watch" ? "color:#ff9f43" : status === "greylist" ? "color:#38bdf8" : status === "daily" ? "color:#4ade80" : "";
     const dateColor = status === "whitelist" ? "color:#666" : "";
     const badge = status === "whitelist" ? '<span style="color:#7c6cff;font-size:10px;font-weight:600">VIP</span>'
       : status === "watch" ? '<span style="color:#ff9f43;font-size:10px">WATCH</span>'
       : status === "blacklist" ? '<span style="color:#f06060;font-size:10px">BLOCKED</span>'
       : status === "greylist" ? '<span style="color:#38bdf8;font-size:10px">MUTED</span>'
+      : status === "daily" ? '<span style="color:#4ade80;font-size:10px">DAILY</span>'
       : "";
 
     div.innerHTML = `
@@ -932,7 +956,7 @@ async function openMessage(uid) {
   $("#readContent").style.display = "flex";
   $("#readHeader").innerHTML = `<div style="color:var(--fg2);font-size:12px">Loading...</div>`;
 
-  const msg = await gideon.fetchMessage(uid);
+  const msg = await gideon.fetchMessage(uid, currentFolder);
   if (msg.error) {
     $("#readHeader").innerHTML = `<div style="color:var(--danger)">${escHtml(msg.error)}</div>`;
     return;
@@ -961,8 +985,8 @@ async function openMessage(uid) {
   const senderAddr = msg.from?.address || "";
   if (senderAddr && senderStatuses[senderAddr]) {
     const s = senderStatuses[senderAddr];
-    const labels = { vip: "VIP", watch: "WATCHING", blocked: "BLOCKED", muted: "MUTED" };
-    const colors = { vip: "#3b82f6", watch: "#f59e0b", blocked: "#ef4444", muted: "#64748b" };
+    const labels = { vip: "VIP", watch: "WATCHING", blocked: "BLOCKED", muted: "MUTED", daily: "DAILY" };
+    const colors = { vip: "#3b82f6", watch: "#f59e0b", blocked: "#ef4444", muted: "#64748b", daily: "#22c55e" };
     statusEl.textContent = labels[s] || s;
     statusEl.style.cssText = `font-size:10px;padding:2px 6px;border-radius:3px;background:${colors[s] || "#334155"}22;color:${colors[s] || "#94a3b8"};border:1px solid ${colors[s] || "#334155"}66;font-weight:600`;
   } else {
@@ -1275,9 +1299,9 @@ async function saveSettings() {
 }
 
 // ── Unified People renderer ─────────────────────────────────────────────
-const ROLE_COLORS = { vip: "#3b82f6", watch: "#f59e0b", blocked: "#ef4444", muted: "#64748b" };
-const ROLE_LABELS = { vip: "VIP", watch: "Watch", blocked: "Blocked", muted: "Muted" };
-const ROLE_DESC = { vip: "Always texts you", watch: "AI analyzes + actions", blocked: "Dark red, auto-deletes in 7 days", muted: "Grey, no notifications" };
+const ROLE_COLORS = { vip: "#3b82f6", watch: "#f59e0b", blocked: "#ef4444", muted: "#64748b", daily: "#06b6d4" };
+const ROLE_LABELS = { vip: "VIP", watch: "Watch", blocked: "Blocked", muted: "Muted", daily: "Daily Update" };
+const ROLE_DESC = { vip: "Always texts you", watch: "AI analyzes + actions", blocked: "Dark red, auto-deletes in 7 days", muted: "Grey, no notifications", daily: "Summarized in morning briefing" };
 
 async function renderPeople() {
   const people = await gideon.peopleGetAll();
@@ -1291,10 +1315,10 @@ async function renderPeople() {
   }
 
   // Group by role for visual clarity
-  const groups = { vip: [], watch: [], blocked: [], muted: [] };
+  const groups = { vip: [], watch: [], daily: [], blocked: [], muted: [] };
   for (const p of people) groups[p.role]?.push(p);
 
-  for (const role of ["vip", "watch", "blocked", "muted"]) {
+  for (const role of ["vip", "watch", "daily", "blocked", "muted"]) {
     const items = groups[role];
     if (!items.length) continue;
 
@@ -1322,7 +1346,7 @@ async function renderPeople() {
       // Role dropdown (change role inline)
       const roleSel = document.createElement("select");
       roleSel.style.cssText = "padding:2px 4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:3px;color:var(--fg);font-size:10px;cursor:pointer";
-      for (const r of ["vip", "watch", "blocked", "muted"]) {
+      for (const r of ["vip", "watch", "daily", "blocked", "muted"]) {
         const opt = document.createElement("option");
         opt.value = r; opt.textContent = ROLE_LABELS[r];
         if (r === role) opt.selected = true;
@@ -1581,6 +1605,20 @@ async function openRules() {
   $("#cfgVipMeetings").checked = vipOpts.detectMeetings;
   $("#cfgVipAutoCalendar").checked = vipOpts.autoCalendar;
   $("#cfgVipAiReview").checked = vipOpts.aiReview;
+
+  // Low Touch settings
+  const lt = await gideon.lowTouchGet();
+  $("#cfgAutoUnsub").checked = lt.autoUnsub;
+  $("#cfgAutoNudge").checked = lt.autoNudge;
+  $("#cfgNudgeDays").value = lt.nudgeDays || 5;
+  const voicePreview = $("#voiceProfilePreview");
+  if (lt.voiceProfile) {
+    voicePreview.textContent = lt.voiceProfile;
+    voicePreview.style.display = "block";
+  } else {
+    voicePreview.style.display = "none";
+  }
+
   $("#rulesModal").style.display = "flex";
   renderPeople();
   renderSettingsInstructions();
@@ -1625,6 +1663,12 @@ async function saveRulesSettings() {
     virustotal: $("#sfKeyVt").value.trim(),
     safebrowsing: $("#sfKeySb").value.trim(),
     abuseipdb: $("#sfKeyAbuse").value.trim(),
+  });
+  // Low Touch settings
+  await gideon.lowTouchSet({
+    autoUnsub: $("#cfgAutoUnsub").checked,
+    autoNudge: $("#cfgAutoNudge").checked,
+    nudgeDays: parseInt($("#cfgNudgeDays").value) || 5,
   });
 }
 

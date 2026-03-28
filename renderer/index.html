@@ -34,7 +34,7 @@
         <div id="lowTouchDot" style="width:8px;height:8px;border-radius:50%;background:#55555e"></div>
         <div style="flex:1">
           <div style="font-size:11px;font-weight:600;color:var(--fg2)" id="lowTouchLabel">Low Touch: OFF</div>
-          <div style="font-size:9px;color:var(--fg2)">Autopilot mode</div>
+          <div style="font-size:9px;color:#f5a623;letter-spacing:0.5px">EXPERIMENTAL</div>
         </div>
       </div>
       <div id="folderList" class="folder-list"></div>
@@ -88,6 +88,8 @@
               <option value="vip_domain">VIP (entire domain)</option>
               <option value="watch">Watch (sender)</option>
               <option value="watch_domain">Watch (entire domain)</option>
+              <option value="daily">Daily Update (sender)</option>
+              <option value="daily_domain">Daily Update (entire domain)</option>
               <option value="blocked">Blocked (sender)</option>
               <option value="blocked_domain">Blocked (entire domain)</option>
               <option value="muted">Muted (sender)</option>
@@ -200,6 +202,7 @@
         <button class="rules-tab" data-tab="security">Security</button>
         <button class="rules-tab" data-tab="conversations">Convos</button>
         <button class="rules-tab" data-tab="sms">SMS</button>
+        <button class="rules-tab" data-tab="lowtouch">Low Touch</button>
       </div>
       <!-- People (unified sender management) -->
       <div id="rulesPeople" class="rules-section">
@@ -217,6 +220,7 @@
           <select id="peopleAddRole" style="padding:6px 8px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px">
             <option value="vip">VIP</option>
             <option value="watch">Watch</option>
+            <option value="daily">Daily Update</option>
             <option value="blocked">Blocked</option>
             <option value="muted">Muted</option>
           </select>
@@ -381,6 +385,34 @@
           <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">Max per day<input type="number" id="cfgSmsMaxDay" value="30" min="1" max="500" style="width:60px;margin-left:8px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" /></label>
         </div>
       </div>
+      <!-- Low Touch settings -->
+      <div id="rulesLowtouch" class="rules-section" style="display:none">
+        <div style="padding:12px 16px;font-size:12px;color:var(--fg2)">
+          Low Touch autopilot settings. <span style="color:#f5a623;font-weight:600">EXPERIMENTAL</span>
+        </div>
+        <div style="padding:8px 16px">
+          <div style="font-size:10px;color:var(--accent);font-weight:600;margin-bottom:8px">Voice & Drafting</div>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">
+            AI learns your writing style from sent emails and drafts replies in your voice.
+          </label>
+          <div id="voiceProfilePreview" style="padding:8px;margin:6px 0;background:var(--bg2);border-radius:6px;font-size:11px;color:var(--fg2);font-style:italic;display:none"></div>
+          <button id="btnLearnVoice" class="ai-action-btn" style="padding:6px 16px;margin:4px 0">Learn My Voice Now</button>
+
+          <div style="font-size:10px;color:var(--accent);font-weight:600;margin:12px 0 8px">Auto-Unsubscribe</div>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2);cursor:pointer">
+            <input type="checkbox" id="cfgAutoUnsub" /> Auto-unsubscribe from newsletters (uses List-Unsubscribe header)
+          </label>
+
+          <div style="font-size:10px;color:var(--accent);font-weight:600;margin:12px 0 8px">Follow-up Nudge</div>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2);cursor:pointer">
+            <input type="checkbox" id="cfgAutoNudge" /> Auto-send follow-up nudge (in your voice) when no reply
+          </label>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">
+            Days before nudge <input type="number" id="cfgNudgeDays" value="5" min="1" max="30" style="width:50px;margin-left:8px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" />
+          </label>
+        </div>
+      </div>
+
       <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px">
         <button id="rulesCheckNow" class="ai-action-btn" style="flex:1;padding:8px">Check Now &amp; Report</button>
         <button id="rulesSave" class="send-btn" style="flex:1;padding:8px">Save All</button>

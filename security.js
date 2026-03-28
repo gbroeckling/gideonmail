@@ -60,6 +60,62 @@ function httpsRequest(url, options = {}) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 0. DKIM / DMARC / SPF — Sender Authentication Verification
+// ═══════════════════════════════════════════════════════════════════════════
+function checkAuthentication(headers) {
+  const result = { dkim: "none", dmarc: "none", spf: "none", spoofRisk: false, details: "" };
+  if (!headers) return result;
+
+  // Parse Authentication-Results header (set by receiving mail server)
+  const authResults = headers["authentication-results"] || headers["Authentication-Results"] || "";
+  const authStr = Array.isArray(authResults) ? authResults.join(" ") : String(authResults);
+
+  if (!authStr) {
+    result.details = "No Authentication-Results header — server may not check DKIM/DMARC/SPF";
+    return result;
+  }
+
+  // DKIM
+  const dkimMatch = authStr.match(/dkim=(\w+)/i);
+  if (dkimMatch) result.dkim = dkimMatch[1].toLowerCase();
+
+  // SPF
+  const spfMatch = authStr.match(/spf=(\w+)/i);
+  if (spfMatch) result.spf = spfMatch[1].toLowerCase();
+
+  // DMARC
+  const dmarcMatch = authStr.match(/dmarc=(\w+)/i);
+  if (dmarcMatch) result.dmarc = dmarcMatch[1].toLowerCase();
+
+  // Also check standalone SPF header (Received-SPF)
+  if (result.spf === "none") {
+    const receivedSpf = headers["received-spf"] || headers["Received-SPF"] || "";
+    const spfStr = Array.isArray(receivedSpf) ? receivedSpf[0] : String(receivedSpf);
+    const spfStandalone = spfStr.match(/^(pass|fail|softfail|neutral|none|temperror|permerror)/i);
+    if (spfStandalone) result.spf = spfStandalone[1].toLowerCase();
+  }
+
+  // Determine spoof risk
+  const failures = [];
+  if (result.dkim === "fail") failures.push("DKIM");
+  if (result.spf === "fail" || result.spf === "softfail") failures.push("SPF");
+  if (result.dmarc === "fail") failures.push("DMARC");
+
+  if (failures.length >= 2) {
+    result.spoofRisk = true;
+    result.details = `⚠ SPOOF RISK: ${failures.join(" + ")} failed — sender may be impersonating this address`;
+  } else if (failures.length === 1) {
+    result.details = `${failures[0]} failed (dkim=${result.dkim}, spf=${result.spf}, dmarc=${result.dmarc})`;
+  } else if (result.dkim === "pass" && result.spf === "pass") {
+    result.details = `Authenticated: dkim=${result.dkim}, spf=${result.spf}, dmarc=${result.dmarc}`;
+  } else {
+    result.details = `Partial: dkim=${result.dkim}, spf=${result.spf}, dmarc=${result.dmarc}`;
+  }
+
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 1. SpamAssassin Headers
 // ═══════════════════════════════════════════════════════════════════════════
 function checkSpamAssassin(headers) {
@@ -295,6 +351,13 @@ async function scanEmail(email, headers, filters, apiKeys, bayesian) {
   const urls = extractUrls((email.html || "") + " " + (email.text || ""));
   const senderIp = extractSenderIp(headers);
 
+  // 0. DKIM/DMARC/SPF — always runs (no toggle needed, fundamental security)
+  const auth = checkAuthentication(headers);
+  if (auth.spoofRisk) { results.flags.push("spoof"); results.score += 15; }
+  else if (auth.dkim === "fail" || auth.spf === "fail" || auth.dmarc === "fail") { results.score += 3; }
+  if (auth.details) results.details.push(auth.details);
+  results.auth = auth; // expose to caller for VIP spoof warning
+
   // 1. SpamAssassin
   if (filters.spamassassin) {
     const sa = checkSpamAssassin(headers);
@@ -349,6 +412,7 @@ async function scanEmail(email, headers, filters, apiKeys, bayesian) {
 
 module.exports = {
   scanEmail,
+  checkAuthentication,
   extractUrls,
   extractSenderIp,
   checkSpamAssassin,
