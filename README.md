@@ -125,7 +125,7 @@ The setup wizard walks you through connecting your email, AI, SMS, and calendar.
 - Windows 10/11 (Electron supports macOS/Linux but tested on Windows)
 
 ### Optional services (all free tiers available)
-- [Anthropic API](https://console.anthropic.com) — AI assistant ($0.003/email)
+- [Anthropic API](https://console.anthropic.com) — AI assistant (~$0.003/email, ~$40/year for a busy account)
 - [Textbelt](https://textbelt.com) — SMS notifications ($10/1000 texts)
 - [Google Calendar API](https://console.cloud.google.com) — calendar integration (free)
 - [VirusTotal](https://www.virustotal.com) — URL/attachment scanning (free tier)
