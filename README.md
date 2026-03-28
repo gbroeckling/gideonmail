@@ -131,6 +131,16 @@ The setup wizard walks you through connecting your email, AI, SMS, and calendar.
 - [VirusTotal](https://www.virustotal.com) — URL/attachment scanning (free tier)
 - [AbuseIPDB](https://www.abuseipdb.com) — IP reputation (free tier)
 
+### Tested Configuration
+
+The beta is actively used daily with this stack — the most tested combination right now:
+
+- **SMS:** [Textbelt](https://textbelt.com) for real-time text alerts
+- **Email:** High-volume IMAP account as an alternative to checking email manually
+- **AI:** [Anthropic Console](https://console.anthropic.com) (Claude Haiku) for all AI features
+
+If you're setting up for the first time, this combination gives you the most reliable experience.
+
 ---
 
 ## Documentation
