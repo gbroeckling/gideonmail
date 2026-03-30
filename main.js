@@ -150,6 +150,93 @@ function updateTrayMenu() {
     { type: "separator" },
     { label: "Open", click: () => { mainWindow?.show(); mainWindow?.focus(); } },
     { label: "Check Mail", click: () => fetchInbox() },
+    { label: "Summarize Now", click: async () => {
+      try {
+        const { Notification } = require("electron");
+        if (Notification.isSupported()) {
+          const n = new Notification({ title: "GideonMail", body: "Generating inbox summary...", silent: true });
+          n.show();
+        }
+        let result;
+        try {
+          result = await fetchInbox(0, 20);
+        } catch (e) {
+          console.error("Tray summarize: fetchInbox failed, retrying with fresh connection", e.message);
+          // Force reconnect
+          imapClient = null;
+          result = await fetchInbox(0, 20);
+        }
+        const msgs = (result.messages || []).slice(0, 20);
+        if (!msgs.length) { console.log("Tray summarize: no messages"); return; }
+        if (!store.get("anthropic_api_key")) { console.log("Tray summarize: no API key"); return; }
+
+        const client = getAnthropicClient();
+        const account = store.get("account") || {};
+        const emailList = msgs.map((m) => {
+          const status = _senderListStatus(m.from?.address, m.from?.name) || "unknown";
+          return `From: ${m.from?.name || m.from?.address} [${status}]\nSubject: ${m.subject}`;
+        }).join("\n---\n");
+
+        const resp = await client.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 800,
+          system: `Analyze these emails. Respond with ONLY valid JSON:
+{"summary": "3-5 bullet point briefing as a single string", "recommendations": [{"index": 0, "action": "blocked|muted|daily|none", "confidence": "high|low", "reason": "brief reason"}]}
+
+IMPORTANT RULES FOR RECOMMENDATIONS:
+- Default to "none" (do nothing). Only recommend an action when you are VERY confident.
+- Only recommend for [unknown] senders. NEVER recommend changes for senders already on a list.
+- Use "blocked" ONLY for obvious spam, scams, or phishing — not just marketing you don't recognize.
+- Use "muted" ONLY for automated notifications the user clearly doesn't need (cron, monitoring, social media alerts).
+- Use "daily" ONLY for delivery/shipping/invoice senders (Amazon, UPS, PayPal type services).
+- Do NOT recommend "vip" or "watch" — the user decides who is important, not you.
+- Set confidence to "high" only when you are certain. Most recommendations should be "none".
+- When in doubt, recommend "none". It is better to do nothing than to miscategorize a sender.
+- Up to 5 high-confidence recommendations is fine, but don't force it — only include what you're sure about.${getInstructionsBlock()}`,
+          messages: [{ role: "user", content: emailList }],
+        });
+
+        const text = (resp.content[0]?.text || "").trim();
+        let parsed;
+        try { parsed = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || "{}"); } catch (e) { parsed = { summary: text, recommendations: [] }; }
+
+        const rawSummary = parsed.summary || text;
+        const summary = Array.isArray(rawSummary) ? rawSummary.join("\n") : String(rawSummary);
+        const recs = (parsed.recommendations || []).filter((r) => r.action && r.action !== "none").map((r) => {
+          const msg = msgs[r.index];
+          if (!msg) return null;
+          const status = _senderListStatus(msg.from?.address, msg.from?.name);
+          if (status) return null; // already on a list, skip
+          return { from: msg.from, subject: msg.subject, uid: msg.uid, recommendation: r.reason, suggestedAction: r.action, confidence: r.confidence || "low", currentStatus: "unknown" };
+        }).filter(Boolean);
+
+        // Send via SMS
+        const smsTo = store.get("sms_to");
+        if (smsTo) {
+          let smsText = `Inbox Summary:\n${summary}`;
+          if (recs.length) smsText += `\n\n${recs.length} AI recommendations sent to email`;
+          await sendAlert(smsText);
+        }
+
+        // Send action email with recommendations
+        if (store.get("action_email_enabled")) {
+          console.log(`Tray summarize: sending summary email with ${recs.length} recommendations`);
+          try {
+            await sendSummaryActionEmail(summary, recs);
+          } catch (e) { console.error("Tray summary email failed:", e.message); }
+        } else {
+          console.log("Tray summarize: action email not enabled, skipping email");
+        }
+
+        // Windows notification with summary
+        if (Notification.isSupported()) {
+          const short = summary.substring(0, 200);
+          const n2 = new Notification({ title: `Inbox: ${msgs.filter((m) => !m.seen).length} unread`, body: short, silent: false });
+          n2.show();
+          n2.on("click", () => { mainWindow?.show(); mainWindow?.focus(); });
+        }
+      } catch (e) { console.error("Tray summarize failed:", e.message); }
+    }},
     { type: "separator" },
     { label: "Quit", click: () => { app.isQuitting = true; app.quit(); } },
   ]);
@@ -735,26 +822,35 @@ async function sendActionEmail(originalMsg, summary, actions) {
 
   // Fetch the full email body for context
   let emailPreview = "";
-  let aiSynopsis = "";
+  let aiCritique = "";
   try {
     const fullMsg = await fetchMessage(originalMsg.uid);
     const bodyText = fullMsg.text || fullMsg.html?.replace(/<[^>]+>/g, " ").substring(0, 3000) || "";
     emailPreview = bodyText.substring(0, 800).trim();
 
-    // AI synopsis if available
+    // AI critique: synopsis + sender assessment + recommended action
     if (store.get("anthropic_api_key")) {
       try {
+        const rep = store.get("sender_reputation") || {};
+        const senderRep = rep[fromAddr.toLowerCase()];
+        const repInfo = senderRep ? `\nYour history: opened ${senderRep.opened || 0}x, replied ${senderRep.replied || 0}x, deleted ${senderRep.deleted || 0}x` : "\nNo prior history with this sender.";
+
         const aiClient = getAnthropicClient();
         const resp = await aiClient.messages.create({
           model: "claude-haiku-4-5-20251001",
-          max_tokens: 150,
-          system: "Summarize this email in 2-3 sentences. What is it about? What action does the sender want? What's the tone? Be direct and specific.",
-          messages: [{ role: "user", content: `From: ${fromName} <${fromAddr}>\nSubject: ${originalMsg.subject}\nDate: ${originalMsg.date}\n\n${bodyText.substring(0, 2000)}` }],
+          max_tokens: 250,
+          system: `Critique this email for the user. Provide:
+1. SUMMARY: What is this email about? (1-2 sentences)
+2. SENDER: Is this sender legitimate? Any red flags? (check domain, language, intent)
+3. RISK: Rate as Safe / Caution / Suspicious
+4. RECOMMENDATION: What should the user do? (reply, ignore, block, add to watch list, etc.)
+Be direct and honest. If it looks like spam or phishing, say so clearly.`,
+          messages: [{ role: "user", content: `From: ${fromName} <${fromAddr}>\nSubject: ${originalMsg.subject}\nDate: ${originalMsg.date}\nCurrent status: ${senderStatus}${repInfo}\n\n${bodyText.substring(0, 2000)}` }],
         });
-        aiSynopsis = (resp.content[0]?.text || "").trim();
-      } catch (e) {}
+        aiCritique = (resp.content[0]?.text || "").trim();
+      } catch (e) { console.error("Action email AI critique failed:", e.message); }
     }
-  } catch (e) {}
+  } catch (e) { console.error("Action email body fetch failed:", e.message); }
 
   // Build action buttons
   const actionButtons = actions.map((a) =>
@@ -791,9 +887,9 @@ async function sendActionEmail(originalMsg, summary, actions) {
       <div style="color:#8b8b96;font-size:10px;margin-bottom:4px">${fromAddr} &middot; ${originalMsg.date ? new Date(originalMsg.date).toLocaleString() : ""}</div>
       <div style="color:#e4e4e8;font-size:16px;font-weight:600;margin-bottom:12px">${originalMsg.subject || "(no subject)"}</div>
 
-      ${aiSynopsis ? `<div style="padding:10px 12px;background:#1a1025;border-left:3px solid #a78bfa;border-radius:0 6px 6px 0;margin-bottom:12px">
-        <div style="font-size:9px;color:#a78bfa;font-weight:700;margin-bottom:4px">AI SYNOPSIS</div>
-        <div style="color:#e4e4e8;font-size:12px;line-height:1.5">${aiSynopsis.replace(/\n/g, "<br>")}</div>
+      ${aiCritique ? `<div style="padding:10px 12px;background:#1a1025;border-left:3px solid #a78bfa;border-radius:0 6px 6px 0;margin-bottom:12px">
+        <div style="font-size:9px;color:#a78bfa;font-weight:700;margin-bottom:4px">AI ASSESSMENT</div>
+        <div style="color:#e4e4e8;font-size:12px;line-height:1.5">${aiCritique.replace(/\n/g, "<br>")}</div>
       </div>` : ""}
 
       ${(summary || "") !== "" ? `<div style="color:#e4e4e8;font-size:12px;line-height:1.5;padding:10px 12px;background:#111113;border-radius:6px;margin-bottom:12px">${(summary || "").replace(/\n/g, "<br>")}</div>` : ""}
@@ -832,7 +928,7 @@ async function sendActionEmail(originalMsg, summary, actions) {
       to: targetEmail,
       subject: `[ACTION:${verifyCode}] ${fromName}: ${originalMsg.subject || "(no subject)"}`,
       html,
-      text: `GideonMail Action Required\n\nFrom: ${fromName} <${fromAddr}>\nStatus: ${statusLabel}\nSubject: ${originalMsg.subject}\nDate: ${originalMsg.date || ""}\n\n${aiSynopsis ? `AI Synopsis: ${aiSynopsis}\n\n` : ""}${summary ? `${summary}\n\n` : ""}${emailPreview ? `--- Email Preview ---\n${emailPreview}\n\n` : ""}Reply with: reply: [message] | approve | decline | later | ignore | vip | watch | daily | blocked | muted`,
+      text: `GideonMail Action Required\n\nFrom: ${fromName} <${fromAddr}>\nStatus: ${statusLabel}\nSubject: ${originalMsg.subject}\nDate: ${originalMsg.date || ""}\n\n${aiCritique ? `AI Assessment: ${aiCritique}\n\n` : ""}${summary ? `${summary}\n\n` : ""}${emailPreview ? `--- Email Preview ---\n${emailPreview}\n\n` : ""}Reply with: reply: [message] | approve | decline | later | ignore | vip | watch | daily | blocked | muted`,
       headers: { "X-GideonMail-Action-Id": actionId, "X-GideonMail-UID": String(originalMsg.uid) },
     });
 
@@ -843,6 +939,119 @@ async function sendActionEmail(originalMsg, summary, actions) {
     store.set("action_emails_sent", sent);
 
   } catch (e) { console.error("Action email failed:", e.message); }
+}
+
+// ── Batch Summary Action Email ──────────────────────────────────────────
+async function sendSummaryActionEmail(summaryText, emailRecommendations) {
+  console.log(`sendSummaryActionEmail called: ${(summaryText || "").substring(0, 50)}... recs=${(emailRecommendations || []).length}`);
+  // summaryText: AI summary string
+  // emailRecommendations: [{from, subject, recommendation, suggestedAction, uid}, ...]
+  const enabled = store.get("action_email_enabled") === true;
+  if (!enabled) { console.log("sendSummaryActionEmail: action email not enabled"); return; }
+
+  const targetEmail = store.get("action_email_address") || store.get("alert_email_to") || "";
+  if (!targetEmail) return;
+  const cfg = store.get("account");
+  if (!cfg) return;
+
+  const crypto = require("crypto");
+  const verifyCode = crypto.randomBytes(6).toString("hex");
+  const actionId = `GM-SUMMARY-${Date.now()}`;
+
+  // Build per-email action rows
+  const statusLabels = { whitelist: "VIP", watch: "WATCH", daily: "DAILY", blacklist: "BLOCKED", greylist: "MUTED", unknown: "Not listed" };
+  const statusColors = { whitelist: "#3b82f6", watch: "#f59e0b", daily: "#22c55e", blacklist: "#ef4444", greylist: "#64748b", unknown: "#55555e" };
+
+  const emailRows = emailRecommendations.map((rec) => {
+    const fromAddr = (rec.from?.address || "").toLowerCase();
+    const fromName = rec.from?.name || fromAddr;
+    const currentStatus = rec.currentStatus || "unknown";
+    const isHighConf = rec.confidence === "high";
+
+    // Action buttons: Skip (do nothing) + role options
+    const skipBtn = `<a href="mailto:${cfg.email || cfg.username}?subject=${encodeURIComponent(`[GIDEON-ACTION:${actionId}:${verifyCode}] ignore`)}&body=${encodeURIComponent("ignore")}" style="display:inline-block;padding:2px 6px;margin:1px;background:#2a2a32;color:#8b8b96;text-decoration:none;border-radius:3px;font-size:9px;font-weight:600;border:1px solid #55555e">Skip</a>`;
+
+    const actionBtns = ["blocked", "muted", "daily", "watch", "vip"].map((role) => {
+      const colors = { vip: "#3b82f6", watch: "#f59e0b", daily: "#22c55e", blocked: "#ef4444", muted: "#64748b" };
+      const labels = { vip: "VIP", watch: "Watch", daily: "Daily", blocked: "Block", muted: "Mute" };
+      const highlight = rec.suggestedAction === role && isHighConf;
+      return `<a href="mailto:${cfg.email || cfg.username}?subject=${encodeURIComponent(`[GIDEON-ACTION:${actionId}:${verifyCode}] ${role} ${fromAddr}`)}&body=${encodeURIComponent(`${role} ${fromAddr}`)}" style="display:inline-block;padding:2px 6px;margin:1px;background:${highlight ? colors[role] : "#2a2a32"};color:#fff;text-decoration:none;border-radius:3px;font-size:9px;font-weight:600;border:1px solid ${highlight ? colors[role] : "#55555e"}">${highlight ? "★ " : ""}${labels[role]}</a>`;
+    }).join("");
+
+    const confLabel = isHighConf ? '<span style="color:#4ade80;font-size:9px"> (high confidence)</span>' : '<span style="color:#f59e0b;font-size:9px"> (suggestion)</span>';
+
+    return `
+      <div style="padding:8px 0;border-bottom:1px solid #2a2a32">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:11px;color:#e4e4e8;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${fromName}</div>
+            <div style="font-size:10px;color:#8b8b96;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${rec.subject || ""}</div>
+          </div>
+          <span style="padding:2px 6px;border-radius:3px;font-size:8px;font-weight:700;color:#fff;background:${statusColors[currentStatus]};white-space:nowrap;margin-left:4px">${statusLabels[currentStatus]}</span>
+        </div>
+        <div style="font-size:10px;color:#a78bfa;margin:4px 0">${rec.recommendation || ""}${confLabel}</div>
+        <div>${skipBtn} ${actionBtns}</div>
+      </div>`;
+  }).join("");
+
+  // Build "Execute All" — ONLY high-confidence recommendations
+  const highConfRecs = emailRecommendations.filter((r) => r.confidence === "high" && r.suggestedAction && r.from?.address);
+  const batchCommands = highConfRecs
+    .map((r) => `${r.suggestedAction} ${r.from.address.toLowerCase()}`)
+    .join("\n");
+
+  const executeAllBtn = batchCommands ? `<a href="mailto:${cfg.email || cfg.username}?subject=${encodeURIComponent(`[GIDEON-ACTION:${actionId}:${verifyCode}] BATCH`)}&body=${encodeURIComponent(batchCommands)}" style="display:block;padding:10px 20px;margin:12px auto;background:linear-gradient(135deg,#7c6cff,#6355e0);color:#fff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px;text-align:center;max-width:300px">Execute ${highConfRecs.length} High-Confidence Actions</a>` : "";
+
+  const html = `
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#111113;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <div style="max-width:550px;margin:20px auto;background:#1a1a1f;border-radius:12px;overflow:hidden;border:1px solid #2a2a32">
+    <div style="background:linear-gradient(135deg,#7c6cff,#6355e0);padding:16px 24px">
+      <div style="color:#fff;font-size:18px;font-weight:700">GideonMail</div>
+      <div style="color:#e0d4ff;font-size:11px;margin-top:2px">Inbox Summary</div>
+    </div>
+    <div style="padding:20px 24px">
+      <div style="color:#e4e4e8;font-size:12px;line-height:1.6;padding:12px;background:#111113;border-radius:8px;margin-bottom:16px;white-space:pre-wrap">${(summaryText || "").replace(/\n/g, "<br>")}</div>
+
+      ${emailRecommendations.length > 0 ? `
+      <div style="font-size:10px;color:#55555e;font-weight:700;margin-bottom:8px">AI RECOMMENDATIONS — ★ = high confidence. Tap per sender or use Execute All for starred only.</div>
+      ${emailRows}
+      ${executeAllBtn}
+      ` : ""}
+
+      <div style="color:#55555e;font-size:9px;text-align:center;margin-top:12px;padding-top:10px;border-top:1px solid #2a2a32">
+        Each button sends one action. "Execute All" sends all starred recommendations at once.<br>
+        Commands: vip · watch · daily · blocked · muted — followed by email address
+      </div>
+    </div>
+  </div>
+</body></html>`;
+
+  try {
+    console.log(`Summary email: sending to ${targetEmail} from ${cfg.email || cfg.username} via ${cfg.smtpHost}:${cfg.smtpPort || 587}`);
+    const transport = nodemailer.createTransport({
+      host: cfg.smtpHost, port: cfg.smtpPort || 587,
+      secure: cfg.smtpSecure || false,
+      auth: { user: cfg.username, pass: cfg.password },
+      tls: { rejectUnauthorized: false },
+    });
+    await transport.sendMail({
+      from: `GideonMail <${cfg.email || cfg.username}>`,
+      to: targetEmail,
+      subject: `[ACTION:${verifyCode}] Inbox Summary — ${emailRecommendations.length} recommendations`,
+      html,
+      text: `GideonMail Inbox Summary\n\n${summaryText}\n\nRecommendations:\n${emailRecommendations.map((r) => `${r.from?.address}: ${r.recommendation} → ${r.suggestedAction}`).join("\n")}\n\nReply with one command per line: block sender@email.com, vip sender@email.com, etc.`,
+    });
+
+    // Track for auto-delete
+    const sent = store.get("action_emails_sent") || [];
+    sent.push({ actionId, verifyCode, uid: null, from: null, subject: "Inbox Summary", sent: new Date().toISOString() });
+    if (sent.length > 50) sent.splice(0, sent.length - 50);
+    store.set("action_emails_sent", sent);
+    console.log("Summary action email sent");
+    _incrementStat("digests_sent");
+  } catch (e) { console.error("Summary action email failed:", e.message); }
 }
 
 // Scan for replies to action emails and execute commands
@@ -886,17 +1095,28 @@ async function processActionReplies() {
           if (actionCmdMatch && originalAction) {
             let command = (actionCmdMatch[1] || "").trim().toLowerCase();
 
-            // Parse body for command if subject doesn't have it
-            if (!command && msg.source) {
+            // Parse body for commands (supports multiple commands, one per line)
+            let commands = [];
+            if (msg.source) {
               const parsed = await simpleParser(msg.source);
-              const bodyText = (parsed.text || "").trim().split("\n")[0].trim().toLowerCase();
-              if (bodyText.startsWith("reply:") || ["approve", "decline", "later", "ignore"].includes(bodyText.split(/\s/)[0])) {
-                command = bodyText;
+              const bodyText = (parsed.text || "").trim();
+              // Split body into lines, filter to valid commands
+              const lines = bodyText.split("\n").map((l) => l.trim().toLowerCase()).filter(Boolean);
+              for (const line of lines) {
+                if (line.startsWith("reply:") || line.startsWith("reply ") ||
+                    ["approve", "decline", "later", "ignore", "delete", "vip", "watch", "blocked", "muted", "daily"].includes(line.split(/\s/)[0]) ||
+                    line.match(/^(block|mute|watch|vip|daily|delete)\s+\S+@\S+/)) {
+                  commands.push(line);
+                }
               }
             }
+            // Subject command is primary if body had nothing
+            if (command && !commands.length) commands = [command];
+            if (!commands.length && command) commands = [command];
 
-            if (command) {
-              console.log(`Action reply (code verified): ${command} for UID ${originalAction.uid}`);
+            for (const cmd of commands) {
+              const command = cmd;
+              console.log(`Action reply (code verified): ${command}`);
 
               if (command.startsWith("reply:") || command.startsWith("reply ")) {
                 const replyText = command.replace(/^reply[:\s]+/, "").trim();
@@ -910,23 +1130,22 @@ async function processActionReplies() {
                   console.log(`Action: replied to ${originalAction.from?.address}`);
                 }
               } else if (command === "approve") {
-                await sendMail({
-                  to: originalAction.from?.address,
-                  subject: `Re: ${originalAction.subject}`,
-                  text: "Approved.",
-                  html: "Approved.",
-                });
+                // Silent acknowledge — no reply sent. Just marks as handled.
+                // The original email stays in inbox as-is.
+                console.log(`Action: approved "${originalAction.subject}" from ${originalAction.from?.address}`);
               } else if (command === "decline") {
-                await sendMail({
-                  to: originalAction.from?.address,
-                  subject: `Re: ${originalAction.subject}`,
-                  text: "Thank you, but I'll have to decline.",
-                  html: "Thank you, but I'll have to decline.",
-                });
+                // Silent decline — no reply sent. Just marks as handled.
+                console.log(`Action: declined "${originalAction.subject}" from ${originalAction.from?.address}`);
               } else if (command === "later") {
                 await autoCreateTask({ uid: originalAction.uid, subject: originalAction.subject, from: originalAction.from });
+              } else if (command === "delete") {
+                // Delete the original email
+                if (originalAction.uid) {
+                  try { await deleteMessage(originalAction.uid); } catch (e) {}
+                  console.log(`Action: deleted UID ${originalAction.uid}`);
+                }
               } else if (command === "vip" || command === "watch" || command === "blocked" || command === "muted" || command === "daily") {
-                // Sender management from action email
+                // Sender management from action email (uses original sender)
                 const senderAddr = originalAction.from?.address;
                 const senderName = originalAction.from?.name || "";
                 if (senderAddr) {
@@ -945,9 +1164,40 @@ async function processActionReplies() {
                   store.set(roleKeys[command], list);
                   console.log(`Action: moved ${senderAddr} to ${command} list`);
                 }
-              }
+              } else if (command.match(/^(vip|watch|blocked|muted|daily|block|mute|delete)\s+\S+@\S+/)) {
+                // Batch command: "block sender@email.com" or "vip sender@email.com"
+                const parts = command.split(/\s+/);
+                let role = parts[0];
+                const targetAddr = parts[1].toLowerCase();
+                // Normalize aliases
+                if (role === "block") role = "blocked";
+                if (role === "mute") role = "muted";
 
-              // Command processed — remove from tracking
+                if (role === "delete") {
+                  // Can't delete by address from batch — skip
+                  console.log(`Action: batch delete by address not supported, skipping ${targetAddr}`);
+                } else {
+                  // Remove from all lists
+                  for (const key of ["sms_whitelist", "ai_watchlist", "sms_blacklist", "sms_greylist", "daily_update_list"]) {
+                    let list = store.get(key) || [];
+                    list = list.filter((i) => i.address !== targetAddr);
+                    store.set(key, list);
+                  }
+                  const roleKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
+                  if (roleKeys[role]) {
+                    const list = store.get(roleKeys[role]) || [];
+                    const entry = { id: Date.now().toString(), address: targetAddr, name: "", enabled: true, created: new Date().toISOString() };
+                    if (role === "watch") entry.actions = { aiAnalyze: true, smsAlert: true, autoCalendar: false, flagImportant: true };
+                    list.push(entry);
+                    store.set(roleKeys[role], list);
+                    console.log(`Action batch: moved ${targetAddr} to ${role}`);
+                  }
+                }
+              }
+            } // end for (const cmd of commands)
+
+            // Commands processed — remove from tracking
+            if (commands.length > 0) {
               const idx = sentActions.findIndex((a) => a.verifyCode === code);
               if (idx >= 0) sentActions.splice(idx, 1);
               store.set("action_emails_sent", sentActions);
@@ -1190,8 +1440,10 @@ async function summarizeThread(msg) {
 }
 
 // ── Auto-Unsubscribe ────────────────────────────────────────────────────
-async function autoUnsubscribe(uid) {
+async function autoUnsubscribe(uid, senderAddress) {
   // Check for List-Unsubscribe header and act on it
+  // Safeguard #7: validate unsubscribe target matches sender domain
+  const senderDomain = (senderAddress || "").split("@")[1] || "";
   try {
     const client = await createFreshImapClient();
     try {
@@ -1229,6 +1481,8 @@ async function autoUnsubscribe(uid) {
                 req.end();
               });
               console.log(`Auto-unsubscribe (body link): ${unsubUrl}`);
+              _incrementStat("unsubscribed");
+              _logAutoAction("unsub-body", senderAddress, unsubUrl, "Unsubscribed via body link");
               return true;
             } catch (e) {}
           }
@@ -1240,6 +1494,13 @@ async function autoUnsubscribe(uid) {
         if (mailtoMatch) {
           const mailto = mailtoMatch[1];
           const [addr, queryStr] = mailto.split("?");
+          // Safeguard #7: Only unsubscribe if target domain matches sender domain
+          const unsubDomain = (addr || "").split("@")[1] || "";
+          if (senderDomain && unsubDomain && !unsubDomain.includes(senderDomain) && !senderDomain.includes(unsubDomain)) {
+            console.log(`Auto-unsubscribe BLOCKED: mailto ${addr} doesn't match sender ${senderAddress}`);
+            _logAutoAction("unsub-blocked", senderAddress, addr, "Domain mismatch — possible weaponized unsubscribe");
+            return false;
+          }
           let subject = "unsubscribe";
           if (queryStr) {
             const params = new URLSearchParams(queryStr);
@@ -1258,6 +1519,8 @@ async function autoUnsubscribe(uid) {
               to: addr, subject, text: "unsubscribe",
             });
             console.log(`Auto-unsubscribe (mailto): sent to ${addr}`);
+            _incrementStat("unsubscribed");
+            _logAutoAction("unsub-mailto", senderAddress, addr, "Unsubscribed via mailto");
             return true;
           }
         }
@@ -1280,6 +1543,8 @@ async function autoUnsubscribe(uid) {
               req.write(postBody); req.end();
             });
             console.log(`Auto-unsubscribe (HTTP POST): ${url}`);
+            _incrementStat("unsubscribed");
+            _logAutoAction("unsub-http", senderAddress, url, "Unsubscribed via HTTP POST");
             return true;
           } catch (e) {}
         }
@@ -1311,6 +1576,186 @@ async function lowTouchEnsureFolders() {
   } catch (e) { console.error("Low Touch folder setup failed:", e.message); }
 }
 
+// ── Low Touch Safeguard System ───────────────────────────────────────────
+// 13 checks to prevent spam from triggering outbound actions
+
+// Safeguard #3: Check bulk/auto/list headers that indicate non-human email
+function _isBulkOrAutoEmail(headers) {
+  if (!headers) return false;
+  const get = (k) => { const v = headers[k] || headers[k.toLowerCase()] || ""; return Array.isArray(v) ? v.join(" ") : String(v); };
+  // Precedence: bulk, junk, list
+  const prec = get("precedence").toLowerCase();
+  if (["bulk", "junk", "list"].some((p) => prec.includes(p))) return true;
+  // Auto-Submitted: anything other than "no"
+  const autoSub = get("auto-submitted").toLowerCase();
+  if (autoSub && autoSub !== "no") return true;
+  // List-Id indicates mailing list
+  if (get("list-id")) return true;
+  // X-Auto-Response-Suppress
+  if (get("x-auto-response-suppress")) return true;
+  return false;
+}
+
+// Safeguard #4: Reply-To vs From mismatch
+function _hasReplyToMismatch(headers, fromAddress) {
+  if (!headers || !fromAddress) return false;
+  const get = (k) => { const v = headers[k] || headers[k.toLowerCase()] || ""; return Array.isArray(v) ? v.join(" ") : String(v); };
+  const replyTo = get("reply-to").toLowerCase();
+  if (!replyTo) return false;
+  const fromDomain = fromAddress.split("@")[1] || "";
+  // Extract email from Reply-To header
+  const replyMatch = replyTo.match(/[\w.-]+@[\w.-]+/);
+  if (!replyMatch) return false;
+  const replyDomain = replyMatch[0].split("@")[1] || "";
+  // Different domain = mismatch (common in phishing)
+  return fromDomain && replyDomain && fromDomain !== replyDomain;
+}
+
+// Safeguard #5: Noreply/donotreply address detection
+function _isNoReplyAddress(address) {
+  if (!address) return false;
+  const lower = address.toLowerCase();
+  return /^(no[-_.]?reply|do[-_.]?not[-_.]?reply|bounce|mailer[-_.]?daemon|postmaster)@/.test(lower);
+}
+
+// Safeguard #6: First-contact quarantine check
+function _isFirstContact(fromAddress) {
+  if (!fromAddress) return true;
+  const rep = store.get("sender_reputation") || {};
+  const stats = rep[fromAddress.toLowerCase()];
+  if (!stats) return true;
+  const total = (stats.opened || 0) + (stats.replied || 0) + (stats.deleted || 0);
+  return total === 0; // never interacted with
+}
+
+// Safeguard #10: Rate limit outbound actions per domain
+function _checkOutboundRateLimit(domain) {
+  if (!domain) return false;
+  const key = "outbound_rate_" + new Date().toISOString().split("T")[0];
+  const rates = store.get(key) || {};
+  return (rates[domain] || 0) >= 5; // max 5 outbound actions per domain per day
+}
+function _incrementOutboundRate(domain) {
+  if (!domain) return;
+  const key = "outbound_rate_" + new Date().toISOString().split("T")[0];
+  const rates = store.get(key) || {};
+  rates[domain] = (rates[domain] || 0) + 1;
+  store.set(key, rates);
+}
+
+// Track what action was taken on each auto-handled email (for digest display)
+function _trackAutoHandledAction(uid, action, detail) {
+  const actions = store.get("low_touch_actions") || {};
+  actions[String(uid)] = { action, detail, time: new Date().toISOString() };
+  // Keep manageable
+  const keys = Object.keys(actions);
+  if (keys.length > 300) {
+    for (const k of keys.slice(0, keys.length - 300)) delete actions[k];
+  }
+  store.set("low_touch_actions", actions);
+}
+
+// ── Statistics Tracking ──────────────────────────────────────────────────
+function _incrementStat(key) {
+  const stats = store.get("gideon_stats") || {};
+  const today = new Date().toISOString().split("T")[0];
+  const week = `week_${Math.floor(Date.now() / (7 * 86400000))}`;
+  if (!stats.daily) stats.daily = {};
+  if (!stats.weekly) stats.weekly = {};
+  if (!stats.total) stats.total = {};
+  stats.daily[today] = stats.daily[today] || {};
+  stats.daily[today][key] = (stats.daily[today][key] || 0) + 1;
+  stats.weekly[week] = stats.weekly[week] || {};
+  stats.weekly[week][key] = (stats.weekly[week][key] || 0) + 1;
+  stats.total[key] = (stats.total[key] || 0) + 1;
+  // Cleanup old daily entries (keep 30 days)
+  const cutoff = new Date(Date.now() - 30 * 86400000).toISOString().split("T")[0];
+  for (const d of Object.keys(stats.daily)) { if (d < cutoff) delete stats.daily[d]; }
+  store.set("gideon_stats", stats);
+}
+
+// ── Ignored Tracking (48h unopened = ignored for reputation) ─────────────
+function _checkIgnoredEmails(messages) {
+  const cutoff = Date.now() - 48 * 3600000; // 48 hours ago
+  const rep = store.get("sender_reputation") || {};
+  let changed = false;
+  const ignoredKey = "ignored_uids_checked";
+  const checked = new Set(store.get(ignoredKey) || []);
+
+  for (const m of messages) {
+    if (checked.has(m.uid)) continue;
+    if (!m.seen && m.date) {
+      const msgTime = new Date(m.date).getTime();
+      if (msgTime < cutoff) {
+        // Unread for 48+ hours = ignored
+        const addr = (m.from?.address || "").toLowerCase();
+        if (addr) {
+          if (!rep[addr]) rep[addr] = { opened: 0, replied: 0, deleted: 0, ignored: 0, firstSeen: new Date().toISOString() };
+          rep[addr].ignored = (rep[addr].ignored || 0) + 1;
+          rep[addr].lastAction = "ignored";
+          rep[addr].lastDate = new Date().toISOString();
+          changed = true;
+        }
+        checked.add(m.uid);
+      }
+    }
+  }
+
+  if (changed) store.set("sender_reputation", rep);
+  const arr = [...checked];
+  if (arr.length > 500) arr.splice(0, arr.length - 500);
+  store.set(ignoredKey, arr);
+}
+
+// IPC for statistics
+ipcMain.handle("stats-get", () => store.get("gideon_stats") || { daily: {}, weekly: {}, total: {} });
+
+// Safeguard #12: Log all automated outbound actions
+function _logAutoAction(action, from, to, details) {
+  const log = store.get("auto_action_log") || [];
+  log.push({ action, from, to, details, time: new Date().toISOString() });
+  if (log.length > 200) log.splice(0, log.length - 200);
+  store.set("auto_action_log", log);
+  console.log(`AUTO-ACTION [${action}]: from=${from} to=${to} — ${details}`);
+}
+
+// Master safeguard gate: returns { safe: true } or { safe: false, reason: "..." }
+async function _spamSafeguardCheck(msg, headers) {
+  const from = (msg.from?.address || "").toLowerCase();
+  const fromDomain = from.split("@")[1] || "";
+
+  // #3: Bulk/auto/list email — never act on these
+  if (_isBulkOrAutoEmail(headers)) {
+    return { safe: false, reason: "Bulk/auto/list email (Precedence/Auto-Submitted/List-Id header)" };
+  }
+
+  // #4: Reply-To mismatch — suspicious
+  if (_hasReplyToMismatch(headers, from)) {
+    return { safe: false, reason: `Reply-To domain differs from sender (${from}) — possible phishing` };
+  }
+
+  // #5: Noreply addresses — never respond
+  if (_isNoReplyAddress(from)) {
+    return { safe: false, reason: `Noreply address (${from})` };
+  }
+
+  // #2: DKIM/SPF/DMARC check
+  if (headers) {
+    const auth = security.checkAuthentication(headers);
+    if (auth.spoofRisk) {
+      return { safe: false, reason: `DKIM/SPF/DMARC SPOOF RISK: ${auth.details}` };
+    }
+    // Single failure is a warning, 2+ is blocked (handled by spoofRisk)
+  }
+
+  // #10: Rate limit per domain
+  if (_checkOutboundRateLimit(fromDomain)) {
+    return { safe: false, reason: `Rate limited: ${fromDomain} (5+ outbound actions today)` };
+  }
+
+  return { safe: true };
+}
+
 let _lowTouchRunning = false;
 async function lowTouchProcess(messages) {
   if (store.get("low_touch_enabled") !== true) return;
@@ -1326,12 +1771,133 @@ async function lowTouchProcess(messages) {
   const processedKey = "low_touch_processed";
   const processed = new Set(store.get(processedKey) || []);
 
-  const unread = messages.filter((m) => !m.seen && !processed.has(m.uid));
+  // Include unread + archive lookback (older emails never processed)
+  const archiveDays = store.get("low_touch_archive_lookback") || 0;
+  const archiveCutoff = archiveDays > 0 ? new Date(Date.now() - archiveDays * 86400000).toISOString() : null;
+
+  const unread = messages.filter((m) => {
+    if (processed.has(m.uid)) return false;
+    // Skip GideonMail's own action/summary/digest emails
+    const subj = (m.subject || "").toLowerCase();
+    if (subj.includes("[action:") || subj.includes("[gideon-action:")) return false;
+    // Normal: unread only. With archive lookback: also process read emails within window
+    if (!m.seen) return true;
+    if (archiveCutoff && m.date && m.date >= archiveCutoff) return true;
+    return false;
+  });
   if (!unread.length) return;
 
   // Only process unknown senders (listed senders handled by normal triage)
   const unknown = unread.filter((m) => !_senderListStatus(m.from?.address, m.from?.name));
   if (!unknown.length) return;
+
+  // ── Safeguard #1: Run spam filters BEFORE Low Touch categorization ────
+  const filters = store.get("security_filters") || {};
+  const apiKeys = { virustotal: store.get("api_virustotal"), safebrowsing: store.get("api_safebrowsing"), abuseipdb: store.get("api_abuseipdb") };
+  const spamFiltered = [];
+  for (const msg of unknown) {
+    try {
+      // Fetch headers for spam + auth checks
+      const freshClient = await createFreshImapClient();
+      let headers = {};
+      try {
+        const lock = await freshClient.getMailboxLock("INBOX");
+        try {
+          const raw = await freshClient.download(msg.uid.toString(), undefined, { uid: true });
+          if (raw?.content) {
+            const chunks = []; for await (const c of raw.content) chunks.push(c);
+            const parsed = await simpleParser(Buffer.concat(chunks));
+            headers = parsed.headers ? Object.fromEntries(parsed.headers) : {};
+          }
+        } finally { lock.release(); }
+      } finally { try { await freshClient.logout(); } catch (e) {} }
+
+      // Run spam heuristics
+      const scanResult = await security.scanEmail(msg, headers, filters, apiKeys, bayesianFilter);
+      if (scanResult.score >= 5) {
+        console.log(`Low Touch BLOCKED (spam score ${scanResult.score}): ${msg.from?.address} "${msg.subject}"`);
+        _incrementStat("spam_blocked");
+        processed.add(msg.uid);
+        continue;
+      }
+
+      // Store headers for safeguard checks during action phase
+      msg._headers = headers;
+      msg._spamScore = scanResult.score;
+      spamFiltered.push(msg);
+    } catch (e) {
+      // If we can't fetch headers, still allow but flag as unchecked
+      msg._headers = null;
+      msg._spamScore = 0;
+      spamFiltered.push(msg);
+    }
+  }
+
+  // ── Pre-AI heuristic spam filter — catches obvious spam the AI misses ──
+  const heuristicFiltered = [];
+  for (const msg of spamFiltered) {
+    const subj = (msg.subject || "").toLowerCase();
+    const fromName = (msg.from?.name || "").toLowerCase();
+    const fromAddr = (msg.from?.address || "").toLowerCase();
+    const domain = fromAddr.includes("@") ? fromAddr.split("@")[1] : "";
+
+    let heuristicSpam = false;
+    let heuristicReason = "";
+
+    // Japanese/Chinese phishing (fake postal, DHL, customs, Amazon.co.jp account theft)
+    const jpPhish = /(日本郵便|ヤマト運輸|佐川急便|税関|配達.*通知|不在.*通知|アカウント.*盗|アカウント.*危険|ご注文のキャンセル.*アカウント)/i;
+    if (jpPhish.test(msg.subject || "") || jpPhish.test(fromName)) {
+      // Check domain — real Japan Post is japanpost.jp, real Amazon is amazon.co.jp
+      const realJpDomains = ["japanpost.jp", "amazon.co.jp", "kuronekoyamato.co.jp", "sagawa-exp.co.jp"];
+      if (!realJpDomains.some(d => domain === d || domain.endsWith("." + d))) {
+        heuristicSpam = true;
+        heuristicReason = "japanese_phishing";
+      }
+    }
+
+    // Health/supplement scams
+    if (/(nail\s*fungus|belly\s*fat|weight\s*loss\s*miracle|erectile|viagra|cialis|enlargement\s*pill|diet\s*pill|keto\s*burn|cbd\s*gummies|blood\s*sugar\s*trick)/i.test(subj)) {
+      heuristicSpam = true; heuristicReason = "health_scam";
+    }
+
+    // Clickbait/shock spam
+    if (/(shocking|shocks?\s*the\s*world|you\s*won.t\s*believe|doctors?\s*(?:hate|don.t\s*want)|one\s*weird\s*trick|transformation.*older|used\s*to\s*look.*years?\s*older)/i.test(subj)) {
+      heuristicSpam = true; heuristicReason = "clickbait_spam";
+    }
+
+    // Nigerian prince / lottery / inheritance
+    if (/(nigerian?\s*prince|lottery\s*winner|you\s*won\s*million|inheritance\s*fund|claim\s*your?\s*prize|selected\s*as\s*winner|lucky\s*winner)/i.test(subj)) {
+      heuristicSpam = true; heuristicReason = "classic_scam";
+    }
+
+    // Sextortion / blackmail
+    if (/(recorded\s*you|webcam\s*hack|bitcoin\s*ransom|sextortion|i\s*have\s*your\s*video)/i.test(subj)) {
+      heuristicSpam = true; heuristicReason = "sextortion";
+    }
+
+    // Suspicious TLD with spam keywords
+    const suspiciousTld = /\.(cn|xyz|top|buzz|icu|club|wang|work|site|online|store|fun|space|click|link|shop|tk|ml|ga|cf|gq)$/;
+    if (suspiciousTld.test(domain) && /(free|winner|prize|offer|discount|deal|urgent|verify|confirm|suspended)/i.test(subj)) {
+      heuristicSpam = true; heuristicReason = "suspicious_tld_spam";
+    }
+
+    if (heuristicSpam) {
+      console.log(`Low Touch HEURISTIC SPAM (${heuristicReason}): ${fromAddr} "${msg.subject}"`);
+      try { await deleteMessage(msg.uid); } catch (e) {}
+      _logAutoAction("heuristic-spam-delete", fromAddr, "deleted", `Heuristic: ${heuristicReason}: "${msg.subject}"`);
+      processed.add(msg.uid);
+      // Track the action taken for the digest
+      _trackAutoHandledAction(msg.uid, "deleted_spam", `Spam: ${heuristicReason}`);
+    } else {
+      heuristicFiltered.push(msg);
+    }
+  }
+
+  if (!heuristicFiltered.length) {
+    const arr = [...processed]; if (arr.length > 200) arr.splice(0, arr.length - 200);
+    store.set(processedKey, arr);
+    return;
+  }
 
   const client = getAnthropicClient();
   const account = store.get("account") || {};
@@ -1340,17 +1906,45 @@ async function lowTouchProcess(messages) {
   // Learn voice profile on first run (or refresh weekly)
   const voiceProfile = await learnVoice();
 
-  for (const msg of unknown.slice(0, 10)) { // max 10 per cycle
+  const maxPerCycle = store.get("low_touch_max_per_cycle") || 100;
+  for (const msg of heuristicFiltered.slice(0, maxPerCycle)) {
     try {
-      // Step 1: AI categorize
+      // ── Safeguard #13: AI categorize with confidence score ────
       const resp = await client.messages.create({
         model: "claude-haiku-4-5-20251001",
-        max_tokens: 150,
+        max_tokens: 200,
         system: `Categorize this email. Respond with ONLY valid JSON:
 {"category": "personal|receipt|newsletter|action|meeting|deadline|spam|notification",
  "needsReply": true/false,
  "deadline": "YYYY-MM-DD or null",
+ "confidence": 0.0-1.0,
+ "scamRisk": true/false,
+ "institutional": true/false,
+ "suggestedRole": "vip|watch|daily|blocked|muted|none",
  "summary": "one sentence summary"}
+
+IMPORTANT — scamRisk detection:
+Set scamRisk to TRUE if the email contains ANY of these patterns:
+- Asks to confirm email address, account, identity, or personal info
+- Claims account suspended/locked/compromised
+- Urgency pressure ("act now", "within 24 hours", "immediate action")
+- Prize/lottery/inheritance notifications
+- Requests for payment, wire transfer, gift cards, cryptocurrency
+- Fake invoices or shipping notifications from unknown senders
+- Impersonates a bank, government agency, or major company
+- Contains threats or blackmail
+- Requests clicking a link to "verify" or "update" something
+
+IMPORTANT — institutional detection:
+Set institutional to TRUE if the sender is clearly from a bank, government agency, tax authority, insurance company, utility provider, healthcare provider, school/university, or legal entity. These emails should NEVER be ignored or auto-deleted.
+
+IMPORTANT — suggestedRole:
+- "vip": sender is clearly a real person the user should always hear from
+- "watch": important service or contact worth monitoring (bank, government, doctor, lawyer)
+- "daily": delivery/shipping/invoice/order tracking sender (Amazon, UPS, PayPal)
+- "blocked": obvious spam, scam
+- "muted": low-value automated notifications
+- "none": can't determine, leave as-is
 
 Categories:
 - personal: from a real person, conversational
@@ -1370,9 +1964,108 @@ Categories:
       } catch (e) { continue; }
 
       const category = cat.category || "notification";
-      console.log(`Low Touch: ${msg.from?.address} "${msg.subject}" → ${category}`);
+      const confidence = parseFloat(cat.confidence) || 0.5;
+      const scamRisk = cat.scamRisk === true;
+      const institutional = cat.institutional === true;
+      const suggestedRole = cat.suggestedRole || "none";
+      console.log(`Low Touch: ${msg.from?.address} "${msg.subject}" → ${category} (confidence=${confidence}, scamRisk=${scamRisk}, institutional=${institutional}, suggest=${suggestedRole})`);
 
-      // Scan personal/action emails for incoming commitments
+      // Auto-detect institutional senders (banks, government, etc.) — add to Watch + SMS alert
+      if (institutional && !scamRisk && confidence >= 0.7) {
+        const instAddr = (msg.from?.address || "").toLowerCase();
+        if (instAddr && !_senderListStatus(instAddr, msg.from?.name)) {
+          const watchList = store.get("ai_watchlist") || [];
+          watchList.push({
+            id: Date.now().toString(), address: instAddr,
+            name: msg.from?.name || instAddr, enabled: true,
+            created: new Date().toISOString(),
+            actions: { aiAnalyze: true, smsAlert: true, autoCalendar: false, flagImportant: true },
+          });
+          store.set("ai_watchlist", watchList);
+          console.log(`Low Touch: auto-added institutional sender ${instAddr} to Watch list`);
+          // Always SMS for institutional
+          if (smsTo) {
+            await sendAlert(`IMPORTANT (${msg.from?.name || instAddr}): ${msg.subject}\n${cat.summary || ""}`);
+            _addSmsSentUid(msg.uid);
+          }
+        }
+      }
+
+      // Auto-suggest role for unknown senders (suggestedRole from AI)
+      if (suggestedRole !== "none" && confidence >= 0.8 && !scamRisk) {
+        const sugAddr = (msg.from?.address || "").toLowerCase();
+        if (sugAddr && !_senderListStatus(sugAddr, msg.from?.name)) {
+          const roleKeys = { vip: "sms_whitelist", watch: "ai_watchlist", daily: "daily_update_list", blocked: "sms_blacklist", muted: "sms_greylist" };
+          const key = roleKeys[suggestedRole];
+          if (key && suggestedRole !== "vip") { // never auto-add VIP, user decides
+            const list = store.get(key) || [];
+            const entry = { id: Date.now().toString(), address: sugAddr, name: msg.from?.name || "", enabled: true, created: new Date().toISOString() };
+            if (suggestedRole === "watch") entry.actions = { aiAnalyze: true, smsAlert: true, autoCalendar: false, flagImportant: true };
+            list.push(entry);
+            store.set(key, list);
+            console.log(`Low Touch: auto-added ${sugAddr} to ${suggestedRole} (AI confidence ${confidence})`);
+          }
+        }
+      }
+
+      // ── Safeguard #11: AI detected scam content — treat as spam ────
+      if (scamRisk) {
+        console.log(`Low Touch BLOCKED (AI scam risk): ${msg.from?.address} "${msg.subject}"`);
+        _incrementStat("scam_blocked");
+        try { await deleteMessage(msg.uid); } catch (e) {}
+        _logAutoAction("scam-delete", msg.from?.address, "deleted", `AI flagged scamRisk: "${msg.subject}"`);
+        _trackAutoHandledAction(msg.uid, "deleted_scam", "Deleted: AI detected scam risk");
+        processed.add(msg.uid);
+        continue;
+      }
+
+      // ── Safeguard #13: Low confidence = file silently, don't act ────
+      if (confidence < 0.6 && (category === "action" || category === "personal" || category === "meeting")) {
+        console.log(`Low Touch: low confidence (${confidence}) for "${msg.subject}" — filing as notification instead of acting`);
+        // Downgrade to notification (safe — just marks as read)
+        try {
+          const notifClient = await createFreshImapClient();
+          try {
+            const lock = await notifClient.getMailboxLock("INBOX");
+            try {
+              try { await notifClient.messageMove(String(msg.uid), "Notifications", { uid: true }); }
+              catch (e) { await notifClient.messageFlagsAdd(String(msg.uid), ["\\Seen"], { uid: true }); }
+            } finally { lock.release(); }
+          } finally { try { await notifClient.logout(); } catch (e) {} }
+        } catch (e) {}
+        processed.add(msg.uid);
+        continue;
+      }
+
+      // ── Safeguard gate: run master check before any outbound action ────
+      const actionCategories = ["action", "personal", "meeting", "newsletter"];
+      if (actionCategories.includes(category)) {
+        const guard = await _spamSafeguardCheck(msg, msg._headers);
+        if (!guard.safe) {
+          console.log(`Low Touch BLOCKED (${guard.reason}): ${msg.from?.address} "${msg.subject}"`);
+          _logAutoAction("safeguard-block", msg.from?.address, "blocked", guard.reason);
+          // Still mark as processed so we don't re-check every cycle
+          processed.add(msg.uid);
+          continue;
+        }
+
+        // ── Safeguard #6: First-contact quarantine — never auto-act on first email ────
+        if (_isFirstContact(msg.from?.address) && (category === "action" || category === "personal")) {
+          console.log(`Low Touch: first contact from ${msg.from?.address} — skipping auto-action, filing as notification`);
+          try {
+            const qClient = await createFreshImapClient();
+            try {
+              const lock = await qClient.getMailboxLock("INBOX");
+              try { await qClient.messageFlagsAdd(String(msg.uid), ["\\Seen"], { uid: true }); }
+              finally { lock.release(); }
+            } finally { try { await qClient.logout(); } catch (e) {} }
+          } catch (e) {}
+          processed.add(msg.uid);
+          continue;
+        }
+      }
+
+      // Scan personal/action emails for incoming commitments (only if safeguards passed)
       if (category === "personal" || category === "action" || category === "meeting") {
         try {
           const fullMsgForCommit = await fetchMessage(msg.uid);
@@ -1385,12 +2078,14 @@ Categories:
       if (category === "spam") {
         // Delete spam
         try { await deleteMessage(msg.uid); } catch (e) {}
+        _trackAutoHandledAction(msg.uid, "deleted_spam", "AI classified as spam");
         console.log(`Low Touch: deleted spam from ${msg.from?.address}`);
+        _incrementStat("spam_deleted");
 
       } else if (category === "newsletter") {
         // Auto-unsubscribe if enabled, then move to Newsletters folder
         if (store.get("low_touch_auto_unsub") === true) {
-          const unsub = await autoUnsubscribe(msg.uid);
+          const unsub = await autoUnsubscribe(msg.uid, msg.from?.address);
           if (unsub) console.log(`Low Touch: auto-unsubscribed from ${msg.from?.address}`);
         }
         // Move to Newsletters folder
@@ -1407,7 +2102,9 @@ Categories:
             } finally { lock.release(); }
           } finally { try { await archiveClient.logout(); } catch (e) {} }
         } catch (e) {}
+        _trackAutoHandledAction(msg.uid, "filed_newsletter", "Moved to Newsletters");
         console.log(`Low Touch: moved newsletter to folder from ${msg.from?.address}`);
+        _incrementStat("newsletters_filed");
 
       } else if (category === "receipt") {
         // Move to Receipts folder
@@ -1421,7 +2118,9 @@ Categories:
             } finally { lock.release(); }
           } finally { try { await rcptClient.logout(); } catch (e) {} }
         } catch (e) {}
+        _trackAutoHandledAction(msg.uid, "filed_receipt", "Moved to Receipts");
         console.log(`Low Touch: filed receipt from ${msg.from?.address}`);
+        _incrementStat("receipts_filed");
 
       } else if (category === "notification") {
         // Move to Notifications folder
@@ -1435,6 +2134,7 @@ Categories:
             } finally { lock.release(); }
           } finally { try { await notifClient.logout(); } catch (e) {} }
         } catch (e) {}
+        _trackAutoHandledAction(msg.uid, "filed_notification", "Moved to Notifications");
 
       } else if (category === "action" || cat.needsReply) {
         // AI drafts a reply in the user's learned voice
@@ -1465,23 +2165,26 @@ Write a concise reply that sounds like them. Only output the reply body.${voiceI
           const draft = draftResp.content[0]?.text || "";
 
           if (draft) {
+            // Safeguard #12: Log the auto-draft action
+            _logAutoAction("auto-draft", msg.from?.address, "action-email", `Draft reply for: "${msg.subject}"`);
+            _incrementStat("drafts_created");
+            _trackAutoHandledAction(msg.uid, "draft_reply", "Draft reply sent for your approval");
+            _incrementOutboundRate((msg.from?.address || "").split("@")[1]);
+
             // Send action email with the draft for phone approval
             await sendActionEmail(msg, `AI Draft Reply:\n\n${draft}`, [
               { label: "Send This Reply", command: `reply: ${draft}`, color: "#4ade80" },
-              { label: "Decline", command: "decline", color: "#f06060" },
+              { label: "Block Sender", command: "blocked", color: "#f06060" },
               { label: "Later", command: "later", color: "#ff9f43" },
               { label: "Ignore", command: "ignore", color: "#55555e" },
             ]);
-
-            if (smsTo) {
-              await sendAlert(`ACTION: ${msg.from?.name || msg.from?.address}: ${msg.subject}\nDraft reply sent to your email for approval`);
-              _addSmsSentUid(msg.uid);
-            }
+            // Action email IS the notification — no SMS needed
+            _addSmsSentUid(msg.uid);
           }
         } catch (e) { console.error("Low Touch draft failed:", e.message); }
 
       } else if (category === "meeting") {
-        // Fetch body for meeting link extraction + proper calendar creation
+        // Safeguard #8: meetings from unknown senders go through action email approval, not silent calendar
         let meetBody = "";
         try {
           const fullMsg = await fetchMessage(msg.uid);
@@ -1489,15 +2192,19 @@ Write a concise reply that sounds like them. Only output the reply body.${voiceI
         } catch (e) {}
         const meetLink = _extractMeetingLink(meetBody);
 
-        if (googleAuth?.isConnected) {
-          try { await autoCreateTask(msg, `Meeting: ${msg.subject}`, meetBody, meetLink); } catch (e) {}
-        }
-        let alertText = `MEETING: ${msg.from?.name || msg.from?.address}: ${msg.subject}`;
+        let alertText = `MEETING (unverified sender): ${msg.from?.name || msg.from?.address}: ${msg.subject}`;
         if (meetLink) alertText += `\n🔗 ${meetLink}`;
-        if (smsTo) {
-          await sendAlert(alertText);
-          _addSmsSentUid(msg.uid);
-        }
+
+        // Send action email for approval instead of auto-creating calendar event
+        await sendActionEmail(msg, alertText, [
+          { label: "Add to Calendar", command: "later", color: "#4ade80" },
+          { label: "Reply", command: "reply", color: "#7c6cff" },
+          { label: "Block Sender", command: "blocked", color: "#f06060" },
+          { label: "Ignore", command: "ignore", color: "#55555e" },
+        ]);
+        _logAutoAction("meeting-approval", msg.from?.address, "action-email", `Meeting from unknown sender: "${msg.subject}"`);
+        // Action email IS the notification — no SMS needed
+        _addSmsSentUid(msg.uid);
 
       } else if (category === "deadline") {
         // SMS alert with deadline
@@ -1554,6 +2261,17 @@ Write a concise reply that sounds like them. Only output the reply body.${voiceI
                   try {
                     const replies = await inboxClient.search({ from: toAddr, since: nudgeCutoff }, { uid: true });
                     if (replies.length === 0 && !nudged.has(sent.uid)) {
+                      // Safeguard #9: Only nudge addresses we have prior history with
+                      const rep = store.get("sender_reputation") || {};
+                      const recipStats = rep[toAddr.toLowerCase()];
+                      const hasHistory = recipStats && ((recipStats.replied || 0) + (recipStats.opened || 0)) > 0;
+                      // Also check if on any sender list (known contact)
+                      const isKnown = !!_senderListStatus(toAddr, "");
+
+                      if (!hasHistory && !isKnown) {
+                        console.log(`Low Touch: nudge SKIPPED for ${toAddr} — no prior interaction history`);
+                        nudged.add(sent.uid);
+                      } else
                       // No reply — auto-send follow-up nudge if enabled
                       if (store.get("low_touch_auto_nudge") === true && voiceProfile) {
                         try {
@@ -1570,6 +2288,8 @@ Write a concise reply that sounds like them. Only output the reply body.${voiceI
                             const reSubject = originalSubject.startsWith("Re:") ? originalSubject : `Re: ${originalSubject}`;
                             await sendMail({ to: toAddr, subject: reSubject, text: nudgeText, html: nudgeText.replace(/\n/g, "<br>") });
                             console.log(`Low Touch: auto-nudge sent to ${toAddr} re: "${originalSubject}"`);
+                            _incrementStat("nudges_sent");
+                            _logAutoAction("auto-nudge", account.email || "", toAddr, `Follow-up re: "${originalSubject}"`);
                             if (smsTo) await sendAlert(`NUDGE SENT: Follow-up to ${toAddr} re: "${originalSubject}"`);
                           }
                         } catch (e) { console.error("Auto-nudge draft failed:", e.message); }
@@ -1602,6 +2322,9 @@ ipcMain.handle("low-touch-get", () => ({
   autoUnsub: store.get("low_touch_auto_unsub") === true,
   autoNudge: store.get("low_touch_auto_nudge") === true,
   voiceProfile: store.get("voice_profile") || "",
+  maxPerCycle: store.get("low_touch_max_per_cycle") || 100,
+  archiveLookbackDays: store.get("low_touch_archive_lookback") || 0,
+  digestMaxEmails: store.get("digest_max_emails") || 60,
 }));
 
 ipcMain.handle("low-touch-set", (_, cfg) => {
@@ -1609,6 +2332,9 @@ ipcMain.handle("low-touch-set", (_, cfg) => {
   if (cfg.nudgeDays !== undefined) store.set("low_touch_nudge_days", cfg.nudgeDays);
   if (cfg.autoUnsub !== undefined) store.set("low_touch_auto_unsub", cfg.autoUnsub);
   if (cfg.autoNudge !== undefined) store.set("low_touch_auto_nudge", cfg.autoNudge);
+  if (cfg.maxPerCycle !== undefined) store.set("low_touch_max_per_cycle", Math.max(5, Math.min(1000, parseInt(cfg.maxPerCycle) || 100)));
+  if (cfg.archiveLookbackDays !== undefined) store.set("low_touch_archive_lookback", Math.max(0, Math.min(365, parseInt(cfg.archiveLookbackDays) || 0)));
+  if (cfg.digestMaxEmails !== undefined) store.set("digest_max_emails", Math.max(20, Math.min(500, parseInt(cfg.digestMaxEmails) || 60)));
   return { ok: true };
 });
 
@@ -1641,10 +2367,18 @@ async function autoTriageNewMail(messages) {
   // Find unread messages that:
   // 1. We haven't already sent SMS for (persistent)
   // 2. Arrived within the lookback window
+  // Filter out GideonMail's own action/summary emails from all processing
+  const ownEmail = (store.get("account")?.email || store.get("account")?.username || "").toLowerCase();
   const newMsgs = messages.filter((m) => {
     if (m.seen) return false;
     if (sentUids.has(m.uid)) return false;
     if (m.date && m.date < cutoff) return false; // too old
+    // Skip our own action emails
+    const subj = (m.subject || "").toLowerCase();
+    if (subj.includes("[action:") || subj.includes("[gideon-action:")) return false;
+    // Skip emails from ourselves (action emails, digests, nudges)
+    const fromAddr = (m.from?.address || "").toLowerCase();
+    if (ownEmail && fromAddr === ownEmail && (subj.includes("action") || subj.includes("digest") || subj.includes("summary"))) return false;
     return true;
   });
   if (!newMsgs.length) { _setLastCheckTime(); return; }
@@ -2249,7 +2983,12 @@ ipcMain.handle("fetch-inbox", async (_, page) => {
   try {
     const result = await fetchInbox(page || 0);
     // Cache messages for reputation tracking on delete
-    if (result.messages) store.set("_last_inbox_messages", result.messages.map((m) => ({ uid: m.uid, from: m.from })));
+    if (result.messages) {
+      store.set("_last_inbox_messages", result.messages.map((m) => ({ uid: m.uid, from: m.from })));
+      // Check for ignored emails (48h+ unopened) for reputation tracking
+      _checkIgnoredEmails(result.messages);
+      _incrementStat("emails_processed");
+    }
     return result;
   } catch (e) {
     return { error: e.message };
@@ -3455,6 +4194,71 @@ ipcMain.handle("ai-chat", async (_, message, emailContext) => {
   catch (e) { return { error: e.message }; }
 });
 
+// ── Summarize Now (with email action recommendations) ────────────────────
+ipcMain.handle("summarize-now", async (_, messages) => {
+  try {
+    if (!store.get("anthropic_api_key")) return { error: "No API key" };
+    const msgs = (messages || []).slice(0, 20);
+    if (!msgs.length) return { error: "No messages" };
+
+    const client = getAnthropicClient();
+    const account = store.get("account") || {};
+
+    // Build email list with sender status
+    const emailList = msgs.map((m) => {
+      const status = _senderListStatus(m.from?.address, m.from?.name) || "unknown";
+      return `From: ${m.from?.name || m.from?.address} [${status}]\nSubject: ${m.subject}\nDate: ${m.date}`;
+    }).join("\n---\n");
+
+    // Get summary + per-email recommendations
+    const resp = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 800,
+      system: `You are an email management assistant for ${account.displayName || "the user"}.
+Analyze these emails and provide:
+1. A 3-5 bullet point inbox summary as a single string (what needs attention, what can wait, anything urgent)
+2. For ONLY the most obvious [unknown] senders, recommend ONE action. Most emails should get "none".
+
+Respond with ONLY valid JSON:
+{"summary": "bullet point summary here as a single string", "recommendations": [{"index": 0, "action": "blocked|muted|daily|none", "confidence": "high|low", "reason": "brief reason"}]}
+
+IMPORTANT RULES:
+- Default to "none" (do nothing). Only recommend when you are VERY confident.
+- Only recommend for [unknown] senders. NEVER for senders already on a list.
+- "blocked": ONLY obvious spam, scams, phishing. Not just marketing.
+- "muted": ONLY automated notifications clearly not needed.
+- "daily": ONLY delivery/shipping/invoice type senders.
+- Do NOT recommend "vip" or "watch" — the user decides who is important.
+- Up to 5 high-confidence recommendations is fine, but don't force it — only include what you're sure about.
+- When in doubt, "none". Better to skip than miscategorize.${getInstructionsBlock()}`,
+      messages: [{ role: "user", content: emailList }],
+    });
+
+    const text = (resp.content[0]?.text || "").trim();
+    let parsed;
+    try { parsed = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || "{}"); } catch (e) { parsed = { summary: text, recommendations: [] }; }
+
+    const rawSummary = parsed.summary || text;
+    const summary = Array.isArray(rawSummary) ? rawSummary.join("\n") : String(rawSummary);
+
+    // Build recommendations with original message data — only unknown senders, high confidence
+    const recs = (parsed.recommendations || []).filter((r) => r.action && r.action !== "none").map((r) => {
+      const msg = msgs[r.index];
+      if (!msg) return null;
+      const status = _senderListStatus(msg.from?.address, msg.from?.name);
+      if (status) return null; // already on a list
+      return { from: msg.from, subject: msg.subject, uid: msg.uid, recommendation: r.reason, suggestedAction: r.action, confidence: r.confidence || "low", currentStatus: "unknown" };
+    }).filter(Boolean);
+
+    // Send to email if action email is enabled
+    if (store.get("action_email_enabled")) {
+      sendSummaryActionEmail(summary, recs).catch((e) => console.error("Summary email failed:", e.message));
+    }
+
+    return { text: summary, recommendations: recs };
+  } catch (e) { return { error: e.message }; }
+});
+
 // ── AI: Extract event from email ─────────────────────────────────────────
 ipcMain.handle("ai-extract-event", async (_, email) => {
   try {
@@ -4059,6 +4863,7 @@ If no commitments found, return {"commitments": []}.`,
       if (commitments.length > 50) commitments.splice(0, commitments.length - 50);
       store.set("tracked_commitments", commitments);
       console.log(`Commitments tracked: ${parsed.commitments.length} from "${sentMsg.subject}"`);
+      _incrementStat("commitments_tracked");
     }
   } catch (e) { console.error("Commitment scan failed:", e.message); }
 }
@@ -4166,52 +4971,170 @@ async function sendSmartDigest() {
   if (hour < digestHour) return;
 
   try {
-    const result = await fetchInbox(0, 100);
+    const digestMax = store.get("digest_max_emails") || 60;
+    const result = await fetchInbox(0, Math.min(digestMax + 40, 500));
     const msgs = result.messages || [];
     if (!msgs.length) return;
 
-    // Categorize messages
+    // ── Categorize messages into meaningful groups ─────────────────────
     const unread = msgs.filter((m) => !m.seen);
-    const needsAction = [];
-    const fyi = [];
-    const autoHandled = [];
-
     const processed = new Set(store.get("low_touch_processed") || []);
+    const autoActions = store.get("low_touch_actions") || {};
 
-    for (const m of msgs.slice(0, 50)) {
+    // Buckets
+    const needsAction = [];     // VIP + Watch list emails
+    const shippingOrders = [];  // AliExpress, Amazon, FedEx, UPS shipping/order updates
+    const newsletters = [];     // Substack, news feeds, content subscriptions
+    const promotions = [];      // Marketing deals, sales, discount offers
+    const jobAlerts = [];       // Indeed, LinkedIn jobs, career notifications
+    const notifications = [];   // Service notifications, social media, automated updates
+    const autoHandledItems = []; // Emails Low Touch already processed (with action labels)
+    const otherUnread = [];     // Anything else unread
+
+    // Shipping/order sender patterns
+    const shippingRe = /aliexpress|amazon|fedex|ups\.com|usps\.com|dhl|purolator|canada\s*post|shopify.*order|tracking|shipment/i;
+    const shippingSubjRe = /\b(package|order|shipped|shipping|delivery|tracking|dispatch|transit|collected|customs|warehouse)\b/i;
+    const newsletterRe = /substack|medium\.com|beehiiv|mailchimp|campaign-archive|list-manage|revue|ghost\.io|buttondown/i;
+    const newsletterSubjRe = /\b(newsletter|digest|weekly|daily\s*brief|roundup|edition|issue\s*#?\d)\b/i;
+    const promoSubjRe = /\b(save|sale|% off|\$\d+ off|deal|discount|clearance|bonus\s*savings|don.t miss|last chance|extended|limited time|free shipping|promo|coupon)\b/i;
+    const jobRe = /indeed|linkedin.*job|glassdoor|ziprecruiter|monster\.com|workopolis|careerbuilder/i;
+
+    for (const m of msgs.slice(0, digestMax)) {
       const status = _senderListStatus(m.from?.address, m.from?.name);
+      const fromAddr = (m.from?.address || "").toLowerCase();
+      const fromName = (m.from?.name || "").toLowerCase();
+      const subj = (m.subject || "");
+
+      // Already processed by Low Touch → show with action taken
+      if (processed.has(m.uid)) {
+        const actionInfo = autoActions[String(m.uid)];
+        const actionLabel = actionInfo ? actionInfo.detail : "Processed";
+        const actionBadge = actionInfo?.action === "deleted_spam" ? "🗑 Deleted (spam)"
+          : actionInfo?.action === "deleted_scam" ? "🗑 Deleted (scam)"
+          : actionInfo?.action === "filed_newsletter" ? "📰 → Newsletters"
+          : actionInfo?.action === "filed_receipt" ? "🧾 → Receipts"
+          : actionInfo?.action === "filed_notification" ? "🔔 → Notifications"
+          : actionInfo?.action === "draft_reply" ? "✏️ Draft reply awaiting approval"
+          : "✓ Processed";
+        autoHandledItems.push({ msg: m, badge: actionBadge, action: actionInfo?.action || "unknown" });
+        continue;
+      }
+
+      // VIP / Watch → needs attention
       if (status === "whitelist" || status === "watch") {
         needsAction.push(m);
-      } else if (processed.has(m.uid)) {
-        autoHandled.push(m);
-      } else if (!m.seen) {
-        fyi.push(m);
+        continue;
       }
+
+      // Only process unread from here
+      if (m.seen) continue;
+
+      // Shipping & order updates
+      if (shippingRe.test(fromAddr) || shippingRe.test(fromName)) {
+        if (shippingSubjRe.test(subj)) { shippingOrders.push(m); continue; }
+      }
+
+      // Job alerts
+      if (jobRe.test(fromAddr) || jobRe.test(fromName)) { jobAlerts.push(m); continue; }
+
+      // Newsletters / content
+      if (newsletterRe.test(fromAddr) || newsletterSubjRe.test(subj)) { newsletters.push(m); continue; }
+
+      // Promotions / marketing deals
+      if (promoSubjRe.test(subj) && !shippingSubjRe.test(subj)) { promotions.push(m); continue; }
+
+      // Everything else unread
+      otherUnread.push(m);
     }
 
-    // AI summarize each section
+    // ── Build digest sections ────────────────────────────────────────────
     const aiClient = getAnthropicClient();
     const sections = [];
 
+    // Section 1: Needs Your Attention (VIP + Watch) — with AI summary
     if (needsAction.length > 0) {
-      const list = needsAction.slice(0, 10).map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`).join("\n");
+      const emailList = needsAction.slice(0, 10).map((m, i) =>
+        `${i + 1}. From: ${m.from?.name || m.from?.address} — Subject: ${m.subject}`
+      ).join("\n");
       try {
         const resp = await aiClient.messages.create({
           model: "claude-haiku-4-5-20251001",
-          max_tokens: 300,
-          system: "Summarize these emails that need the user's attention. 1-2 sentences per email. Be concise.",
-          messages: [{ role: "user", content: list }],
+          max_tokens: 400,
+          system: `You are summarizing emails for a daily digest. For each email below, write a 1-sentence summary of what it's about and why it might need attention. Format each as a bullet point. Do NOT say you can't see the emails — you have the sender and subject line, use them to infer the topic.`,
+          messages: [{ role: "user", content: `Here are ${needsAction.length} emails from important contacts:\n\n${emailList}` }],
         });
-        sections.push({ title: "Needs Your Attention", color: "#ef4444", items: (resp.content[0]?.text || list).split("\n").filter(Boolean) });
-      } catch (e) { sections.push({ title: "Needs Your Attention", color: "#ef4444", items: needsAction.map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`) }); }
+        const aiText = resp.content[0]?.text || "";
+        // Only use AI response if it looks like actual summaries (not a confused refusal)
+        const lines = aiText.split("\n").filter(Boolean);
+        const looksValid = lines.length > 0 && !aiText.includes("I don't see any emails") && !aiText.includes("I can't") && !aiText.includes("Could you please");
+        if (looksValid) {
+          sections.push({ title: "Needs Your Attention", color: "#ef4444", icon: "🔴", items: lines });
+        } else {
+          sections.push({ title: "Needs Your Attention", color: "#ef4444", icon: "🔴", items: needsAction.map((m) => `<b>${m.from?.name || m.from?.address}</b>: ${m.subject}`) });
+        }
+      } catch (e) {
+        sections.push({ title: "Needs Your Attention", color: "#ef4444", icon: "🔴", items: needsAction.map((m) => `<b>${m.from?.name || m.from?.address}</b>: ${m.subject}`) });
+      }
     }
 
-    if (fyi.length > 0) {
-      sections.push({ title: "FYI — New & Unread", color: "#f59e0b", items: fyi.slice(0, 15).map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`) });
+    // Section 2: Shipping & Orders
+    if (shippingOrders.length > 0) {
+      sections.push({ title: "Shipping & Orders", color: "#3b82f6", icon: "📦", items: shippingOrders.slice(0, 10).map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`) });
     }
 
-    if (autoHandled.length > 0) {
-      sections.push({ title: "Auto-Handled by GideonMail", color: "#22c55e", items: autoHandled.slice(0, 10).map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`) });
+    // Section 3: Job Alerts
+    if (jobAlerts.length > 0) {
+      sections.push({ title: "Job Alerts", color: "#8b5cf6", icon: "💼", items: jobAlerts.slice(0, 5).map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`) });
+    }
+
+    // Section 4: Newsletters & Content
+    if (newsletters.length > 0) {
+      sections.push({ title: "Newsletters & Content", color: "#06b6d4", icon: "📰", items: newsletters.slice(0, 8).map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`) });
+    }
+
+    // Section 5: Promotions & Deals
+    if (promotions.length > 0) {
+      sections.push({ title: "Promotions & Deals", color: "#f59e0b", icon: "🏷️", items: promotions.slice(0, 8).map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`) });
+    }
+
+    // Section 6: Notifications
+    if (notifications.length > 0) {
+      sections.push({ title: "Notifications", color: "#64748b", icon: "🔔", items: notifications.slice(0, 8).map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`) });
+    }
+
+    // Section 7: Other Unread
+    if (otherUnread.length > 0) {
+      sections.push({ title: "Other Unread", color: "#94a3b8", icon: "📧", items: otherUnread.slice(0, 10).map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`) });
+    }
+
+    // Section 8: Auto-Handled — grouped by action type with explicit labels
+    if (autoHandledItems.length > 0) {
+      // Group by action type
+      const spamDeleted = autoHandledItems.filter((i) => i.action === "deleted_spam" || i.action === "deleted_scam");
+      const filed = autoHandledItems.filter((i) => i.action.startsWith("filed_"));
+      const drafts = autoHandledItems.filter((i) => i.action === "draft_reply");
+      const other = autoHandledItems.filter((i) => !["deleted_spam", "deleted_scam", "draft_reply"].includes(i.action) && !i.action.startsWith("filed_"));
+
+      const items = [];
+      if (spamDeleted.length > 0) {
+        items.push(`<b style="color:#f87171">🗑 Deleted as spam/scam (${spamDeleted.length}):</b>`);
+        for (const i of spamDeleted.slice(0, 5)) items.push(`&nbsp;&nbsp;${i.msg.from?.name || i.msg.from?.address}: ${i.msg.subject}`);
+        if (spamDeleted.length > 5) items.push(`&nbsp;&nbsp;<i>...and ${spamDeleted.length - 5} more</i>`);
+      }
+      if (filed.length > 0) {
+        items.push(`<b style="color:#4ade80">📂 Auto-filed (${filed.length}):</b>`);
+        for (const i of filed.slice(0, 5)) items.push(`&nbsp;&nbsp;${i.badge} — ${i.msg.from?.name || i.msg.from?.address}: ${i.msg.subject}`);
+        if (filed.length > 5) items.push(`&nbsp;&nbsp;<i>...and ${filed.length - 5} more</i>`);
+      }
+      if (drafts.length > 0) {
+        items.push(`<b style="color:#7c6cff">✏️ Draft replies awaiting approval (${drafts.length}):</b>`);
+        for (const i of drafts) items.push(`&nbsp;&nbsp;${i.msg.from?.name || i.msg.from?.address}: ${i.msg.subject}`);
+      }
+      if (other.length > 0) {
+        items.push(`<b style="color:#94a3b8">✓ Other processed (${other.length}):</b>`);
+        for (const i of other.slice(0, 3)) items.push(`&nbsp;&nbsp;${i.msg.from?.name || i.msg.from?.address}: ${i.msg.subject}`);
+      }
+      sections.push({ title: "Auto-Handled by GideonMail", color: "#22c55e", icon: "⚡", items });
     }
 
     // Commitments due
@@ -4231,13 +5154,30 @@ async function sendSmartDigest() {
       sections.push({ title: "Sender Suggestions", color: "#06b6d4", items: repSuggestions.slice(0, 5).map((s) => `${s.addr} → ${s.action}: ${s.reason}`) });
     }
 
+    // Weekly statistics
+    const stats = store.get("gideon_stats") || {};
+    const weekKey = `week_${Math.floor(Date.now() / (7 * 86400000))}`;
+    const weekStats = stats.weekly?.[weekKey] || {};
+    const statItems = [];
+    if (weekStats.spam_blocked || weekStats.spam_deleted || weekStats.scam_blocked) statItems.push(`${(weekStats.spam_blocked || 0) + (weekStats.spam_deleted || 0) + (weekStats.scam_blocked || 0)} spam/scam blocked`);
+    if (weekStats.newsletters_filed) statItems.push(`${weekStats.newsletters_filed} newsletters filed`);
+    if (weekStats.receipts_filed) statItems.push(`${weekStats.receipts_filed} receipts filed`);
+    if (weekStats.drafts_created) statItems.push(`${weekStats.drafts_created} replies drafted`);
+    if (weekStats.commitments_tracked) statItems.push(`${weekStats.commitments_tracked} commitments tracked`);
+    if (weekStats.nudges_sent) statItems.push(`${weekStats.nudges_sent} follow-ups sent`);
+    if (weekStats.unsubscribed) statItems.push(`${weekStats.unsubscribed} newsletters unsubscribed`);
+    if (weekStats.digests_sent) statItems.push(`${weekStats.digests_sent} digests sent`);
+    if (statItems.length > 0) {
+      sections.push({ title: "This Week's Activity", color: "#8b5cf6", items: statItems });
+    }
+
     if (!sections.length) return;
 
     // Build HTML
     const sectionHtml = sections.map((s) => `
-      <div style="margin-bottom:16px">
-        <div style="font-size:13px;font-weight:700;color:${s.color};padding:8px 0;border-bottom:1px solid ${s.color}33">${s.title} (${s.items.length})</div>
-        ${s.items.map((item) => `<div style="padding:4px 0;font-size:12px;color:#e4e4e8;border-bottom:1px solid #2a2a32">${item}</div>`).join("")}
+      <div style="margin-bottom:18px">
+        <div style="font-size:13px;font-weight:700;color:${s.color};padding:8px 0;border-bottom:2px solid ${s.color}44">${s.icon || ""} ${s.title} (${s.items.length})</div>
+        ${s.items.map((item) => `<div style="padding:5px 0;font-size:12px;color:#e4e4e8;border-bottom:1px solid #2a2a32">${item}</div>`).join("")}
       </div>
     `).join("");
 

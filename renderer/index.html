@@ -28,7 +28,10 @@
 
   <div id="app">
     <nav id="sidebar">
-      <div class="logo">GideonMail</div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <div class="logo" style="flex:1">GideonMail</div>
+        <button id="btnSummarizeNow" style="padding:2px 6px;font-size:9px;background:#7c6cff22;border:1px solid #7c6cff44;color:#a78bfa;border-radius:3px;cursor:pointer;white-space:nowrap">Summarize</button>
+      </div>
       <button id="btnCompose" class="compose-btn">Compose</button>
       <div id="lowTouchToggle" style="padding:6px 10px;margin-bottom:8px;background:var(--bg2);border-radius:8px;cursor:pointer;display:flex;align-items:center;gap:8px">
         <div id="lowTouchDot" style="width:8px;height:8px;border-radius:50%;background:#55555e"></div>
@@ -58,8 +61,16 @@
         <button id="pendingDismiss" style="padding:4px 8px;background:none;border:1px solid #92400e;color:#fbbf24;border-radius:4px;cursor:pointer;font-size:11px">Dismiss</button>
       </div>
       <div id="listPane">
-        <div class="list-toolbar">
-          <input type="text" id="searchInput" placeholder="Search mail..." />
+        <div class="list-toolbar" style="display:flex;gap:4px;align-items:center">
+          <input type="checkbox" id="selectAll" title="Select all" style="cursor:pointer" />
+          <input type="text" id="searchInput" placeholder="Search mail..." style="flex:1" />
+        </div>
+        <div id="bulkToolbar" style="display:none;padding:4px 8px;background:#1a1a2e;border-bottom:1px solid var(--border);display:none;gap:4px;align-items:center;font-size:11px">
+          <span id="bulkCount" style="color:var(--fg2);margin-right:4px">0 selected</span>
+          <button class="bulk-btn" data-action="delete" style="padding:2px 8px;background:#1a0a0a;border:1px solid #f06060;color:#fca5a5;border-radius:3px;cursor:pointer;font-size:10px">Delete</button>
+          <button class="bulk-btn" data-action="read" style="padding:2px 8px;background:var(--bg2);border:1px solid var(--bg3);color:var(--fg2);border-radius:3px;cursor:pointer;font-size:10px">Mark Read</button>
+          <button class="bulk-btn" data-action="flag" style="padding:2px 8px;background:#1a1a0a;border:1px solid #f59e0b;color:#fbbf24;border-radius:3px;cursor:pointer;font-size:10px">Flag</button>
+          <button class="bulk-btn" data-action="block" style="padding:2px 8px;background:#1a0a0a;border:1px solid #ef4444;color:#fca5a5;border-radius:3px;cursor:pointer;font-size:10px">Block Sender</button>
         </div>
         <div id="messageList" class="message-list"></div>
         <div id="listFooter" class="list-footer">
@@ -111,7 +122,10 @@
         <span id="composeTitle">New Message</span>
         <button id="composeClose" class="icon-btn">&times;</button>
       </div>
-      <input type="text" id="composeTo" placeholder="To" />
+      <div style="position:relative">
+        <input type="text" id="composeTo" placeholder="To" autocomplete="off" />
+        <div id="composeAutocomplete" style="display:none;position:absolute;top:100%;left:0;right:0;background:#1a1a1f;border:1px solid var(--border);border-radius:0 0 6px 6px;max-height:150px;overflow-y:auto;z-index:100"></div>
+      </div>
       <input type="text" id="composeCc" placeholder="Cc" />
       <input type="text" id="composeSubject" placeholder="Subject" />
       <div id="composeEditor" contenteditable="true" class="compose-editor"></div>
@@ -202,6 +216,7 @@
         <button class="rules-tab" data-tab="security">Security</button>
         <button class="rules-tab" data-tab="conversations">Convos</button>
         <button class="rules-tab" data-tab="sms">SMS</button>
+        <button class="rules-tab" data-tab="stats">Stats</button>
         <button class="rules-tab" data-tab="lowtouch">Low Touch</button>
       </div>
       <!-- People (unified sender management) -->
@@ -387,10 +402,17 @@
       </div>
       <!-- Low Touch settings -->
       <div id="rulesLowtouch" class="rules-section" style="display:none">
-        <div style="padding:12px 16px;font-size:12px;color:var(--fg2)">
-          Low Touch autopilot settings. <span style="color:#f5a623;font-weight:600">EXPERIMENTAL</span>
+        <div id="ltStatusBanner" style="padding:10px 16px;font-size:12px;font-weight:600;border-bottom:1px solid var(--border)">
+          <!-- Populated by JS based on Low Touch state -->
         </div>
-        <div style="padding:8px 16px">
+        <div style="padding:12px 16px;font-size:11px;color:var(--fg2);line-height:1.5">
+          These settings control how GideonMail's AI autopilot handles your email.
+          <span style="color:#f5a623;font-weight:600">EXPERIMENTAL</span><br>
+          <span id="ltInactiveNote" style="color:#f87171;font-size:11px;display:none">
+            Low Touch is currently <b>OFF</b> &mdash; these settings are saved but <b>not active</b>. Turn on Low Touch (sidebar toggle) to enable autopilot actions.
+          </span>
+        </div>
+        <div id="ltSettingsBody" style="padding:8px 16px">
           <div style="font-size:10px;color:var(--accent);font-weight:600;margin-bottom:8px">Voice & Drafting</div>
           <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">
             AI learns your writing style from sent emails and drafts replies in your voice.
@@ -410,6 +432,34 @@
           <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">
             Days before nudge <input type="number" id="cfgNudgeDays" value="5" min="1" max="30" style="width:50px;margin-left:8px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" />
           </label>
+
+          <div style="font-size:10px;color:var(--accent);font-weight:600;margin:12px 0 8px">Processing Limits</div>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">
+            Emails per cycle <input type="number" id="cfgMaxPerCycle" value="100" min="5" max="1000" style="width:70px;margin-left:8px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" />
+            <span style="font-size:10px;color:var(--fg2)">(5–1000)</span>
+          </label>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">
+            Archive lookback (days) <input type="number" id="cfgArchiveLookback" value="0" min="0" max="365" style="width:60px;margin-left:8px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" />
+            <span style="font-size:10px;color:var(--fg2)">(0 = new only)</span>
+          </label>
+          <label style="display:block;padding:4px 0;font-size:12px;color:var(--fg2)">
+            Digest max emails <input type="number" id="cfgDigestMax" value="60" min="20" max="500" style="width:60px;margin-left:8px;padding:4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:4px;color:var(--fg);font-size:12px" />
+            <span style="font-size:10px;color:var(--fg2)">(20–500)</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div id="rulesStats" class="rules-section" style="display:none">
+        <div style="padding:12px 16px;font-size:12px;color:var(--fg2)">What GideonMail has done for you.</div>
+        <div id="statsContent" style="padding:8px 16px"></div>
+        <div style="padding:8px 16px;border-top:1px solid var(--border);margin-top:8px">
+          <div style="font-size:10px;color:var(--accent);font-weight:600;margin-bottom:8px">Config Backup</div>
+          <div style="display:flex;gap:6px">
+            <button id="btnExportConfig" class="ai-action-btn" style="padding:6px 16px">Export Config</button>
+            <button id="btnImportConfig" class="ai-action-btn" style="padding:6px 16px">Import Config</button>
+            <input type="file" id="importConfigFile" accept=".json" style="display:none" />
+          </div>
         </div>
       </div>
 

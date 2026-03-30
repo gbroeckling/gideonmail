@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("gideon", {
   aiAnalyze:     (email)         => ipcRenderer.invoke("ai-analyze", email),
   aiDraftReply:  (email, instr)  => ipcRenderer.invoke("ai-draft-reply", email, instr),
   aiChat:        (msg, ctx)      => ipcRenderer.invoke("ai-chat", msg, ctx),
+  summarizeNow:  (msgs)          => ipcRenderer.invoke("summarize-now", msgs),
   aiClearHistory:()              => ipcRenderer.invoke("ai-clear-history"),
 
   // Security filters
@@ -41,6 +42,9 @@ contextBridge.exposeInMainWorld("gideon", {
   // Auto-check interval
   autocheckGet:  () => ipcRenderer.invoke("autocheck-get"),
   autocheckSave: (c) => ipcRenderer.invoke("autocheck-save", c),
+
+  // Statistics
+  statsGet:             ()   => ipcRenderer.invoke("stats-get"),
 
   // Reputation & Commitments
   reputationGet:        ()   => ipcRenderer.invoke("reputation-get"),

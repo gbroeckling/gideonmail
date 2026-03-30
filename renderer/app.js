@@ -44,6 +44,42 @@ function bindEvents() {
   $("#btnSettings").addEventListener("click", openSettings);
   $("#btnRefresh").addEventListener("click", () => { loadFolders(); loadMessages(); });
 
+  // Summarize Now button
+  $("#btnSummarizeNow").addEventListener("click", async () => {
+    const btn = $("#btnSummarizeNow");
+    btn.textContent = "...";
+    btn.disabled = true;
+    try {
+      const msgs = currentMessages.slice(0, 20);
+      if (!msgs.length) { btn.textContent = "No emails"; setTimeout(() => { btn.textContent = "Summarize"; btn.disabled = false; }, 2000); return; }
+      const res = await gideon.summarizeNow(msgs);
+      if (res.text) {
+        // Show in AI panel
+        $("#aiPanel").style.display = "flex";
+        let html = `<strong style="color:#a78bfa">Inbox Summary</strong><br>${res.text.replace(/\n/g, "<br>")}`;
+        if (res.recommendations?.length) {
+          html += `<br><br><strong style="color:#f59e0b">AI Recommendations (${res.recommendations.length}):</strong>`;
+          for (const r of res.recommendations) {
+            html += `<br><span style="color:#8b8b96">${r.from?.name || r.from?.address}:</span> <span style="color:#a78bfa">${r.suggestedAction}</span> — ${r.recommendation}`;
+          }
+          html += `<br><br><span style="font-size:10px;color:#55555e">Summary + recommendations sent to your action email for one-tap execution.</span>`;
+        }
+        const div = document.createElement("div");
+        div.className = "ai-msg assistant";
+        div.innerHTML = html;
+        $("#aiMessages").appendChild(div);
+        $("#aiMessages").scrollTop = $("#aiMessages").scrollHeight;
+      } else if (res.error) {
+        const div = document.createElement("div");
+        div.className = "ai-msg assistant";
+        div.innerHTML = `<span style="color:var(--danger)">${res.error}</span>`;
+        $("#aiMessages").appendChild(div);
+      }
+    } catch (e) {}
+    btn.textContent = "Summarize";
+    btn.disabled = false;
+  });
+
   // Low Touch toggle
   async function updateLowTouchUI() {
     const cfg = await gideon.lowTouchGet();
@@ -588,6 +624,37 @@ Only output the reply body, no subject line.`,
 
   // Compose
   $("#composeClose").addEventListener("click", closeCompose);
+
+  // Compose autocomplete from People list
+  let acPeople = [];
+  $("#composeTo").addEventListener("focus", async () => {
+    acPeople = await gideon.peopleGetAll();
+  });
+  $("#composeTo").addEventListener("input", () => {
+    const val = $("#composeTo").value.toLowerCase().trim();
+    const dropdown = $("#composeAutocomplete");
+    if (!val || val.length < 2) { dropdown.style.display = "none"; return; }
+    const matches = acPeople.filter((p) => p.address?.includes(val) || p.name?.toLowerCase().includes(val)).slice(0, 8);
+    if (!matches.length) { dropdown.style.display = "none"; return; }
+    dropdown.innerHTML = matches.map((p) =>
+      `<div class="ac-item" style="padding:6px 10px;cursor:pointer;font-size:11px;border-bottom:1px solid var(--border);color:var(--fg)" data-addr="${p.address}">
+        <span style="font-weight:600">${escHtml(p.name || p.address)}</span>
+        ${p.name ? `<span style="color:var(--fg2);margin-left:4px">${escHtml(p.address)}</span>` : ""}
+      </div>`
+    ).join("");
+    dropdown.style.display = "block";
+    dropdown.querySelectorAll(".ac-item").forEach((item) => {
+      item.addEventListener("click", () => {
+        $("#composeTo").value = item.dataset.addr;
+        dropdown.style.display = "none";
+      });
+    });
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#composeTo") && !e.target.closest("#composeAutocomplete")) {
+      $("#composeAutocomplete").style.display = "none";
+    }
+  });
   $("#composeSend").addEventListener("click", sendCompose);
   $("#composeAttach").addEventListener("change", handleAttachFiles);
 
@@ -612,7 +679,7 @@ Only output the reply body, no subject line.`,
     tab.addEventListener("click", () => {
       $$(".rules-tab").forEach((t) => t.classList.remove("active"));
       tab.classList.add("active");
-      const sections = { people: "rulesPeople", instructions: "rulesInstructions", security: "rulesSecurity", conversations: "rulesConversations", sms: "rulesSms", lowtouch: "rulesLowtouch" };
+      const sections = { people: "rulesPeople", instructions: "rulesInstructions", security: "rulesSecurity", conversations: "rulesConversations", sms: "rulesSms", lowtouch: "rulesLowtouch", stats: "rulesStats" };
       Object.values(sections).forEach((id) => { const el = $(`#${id}`); if (el) el.style.display = "none"; });
       const target = sections[tab.dataset.tab];
       if (target) $(`#${target}`).style.display = "block";
@@ -719,6 +786,176 @@ Only output the reply body, no subject line.`,
       setTimeout(() => { $("#btnTask").click(); }, 500);
     }
   });
+
+  // ── Keyboard Shortcuts ──────────────────────────────────────────────────
+  document.addEventListener("keydown", (e) => {
+    // Don't fire when typing in inputs/textareas
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) return;
+    // Don't fire with modifiers (except shift for range select)
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+
+    const key = e.key.toLowerCase();
+    if (key === "d" && currentMsg) { gideon.deleteMessage(currentMsg.uid); loadMessages(); } // Delete
+    else if (key === "r" && currentMsg) { $("#btnCompose").click(); } // Reply (opens compose)
+    else if (key === "s" && currentMsg) { gideon.toggleFlag(currentMsg.uid, "flagged"); } // Star/Flag
+    else if (key === "j") { // Next message
+      const rows = [...$$(".msg-row")];
+      const idx = rows.findIndex((r) => r.classList.contains("active"));
+      if (idx < rows.length - 1) rows[idx + 1]?.click();
+    }
+    else if (key === "k") { // Previous message
+      const rows = [...$$(".msg-row")];
+      const idx = rows.findIndex((r) => r.classList.contains("active"));
+      if (idx > 0) rows[idx - 1]?.click();
+    }
+    else if (key === "c") { $("#btnCompose").click(); } // Compose
+    else if (key === "/") { e.preventDefault(); $("#searchInput").focus(); } // Search
+  });
+
+  // ── Bulk Actions ──────────────────────────────────────────────────────
+  // selectedUids declared at top level for renderMessageList access
+  window._selectedUids = window._selectedUids || new Set();
+  const selectedUids = window._selectedUids;
+
+  window._updateBulkToolbar = function updateBulkToolbar() {
+    const bar = $("#bulkToolbar");
+    if (selectedUids.size > 0) {
+      bar.style.display = "flex";
+      $("#bulkCount").textContent = `${selectedUids.size} selected`;
+    } else {
+      bar.style.display = "none";
+    }
+  }
+
+  $("#selectAll").addEventListener("change", (e) => {
+    selectedUids.clear();
+    if (e.target.checked) {
+      for (const m of currentMessages) selectedUids.add(m.uid);
+    }
+    $$(".msg-checkbox").forEach((cb) => { cb.checked = e.target.checked; });
+    updateBulkToolbar();
+  });
+
+  for (const btn of $$(".bulk-btn")) {
+    btn.addEventListener("click", async () => {
+      const action = btn.dataset.action;
+      if (!selectedUids.size) return;
+      const uids = [...selectedUids];
+
+      if (action === "delete") {
+        if (!confirm(`Delete ${uids.length} messages?`)) return;
+        for (const uid of uids) { try { await gideon.deleteMessage(uid); } catch (e) {} }
+      } else if (action === "read") {
+        // Mark read handled by fetchMessage (marks as seen)
+        for (const uid of uids) { try { await gideon.fetchMessage(uid); } catch (e) {} }
+      } else if (action === "flag") {
+        for (const uid of uids) { try { await gideon.toggleFlag(uid, "flagged"); } catch (e) {} }
+      } else if (action === "block") {
+        const addrs = new Set();
+        for (const uid of uids) {
+          const msg = currentMessages.find((m) => m.uid === uid);
+          if (msg?.from?.address) addrs.add(msg.from.address);
+        }
+        if (!confirm(`Block ${addrs.size} sender(s)?`)) return;
+        for (const addr of addrs) {
+          await gideon.peopleAdd({ address: addr, name: "", role: "blocked" });
+        }
+      }
+
+      selectedUids.clear();
+      $("#selectAll").checked = false;
+      updateBulkToolbar();
+      await loadMessages();
+    });
+  }
+
+  // ── Export/Import Config ──────────────────────────────────────────────
+  $("#btnExportConfig").addEventListener("click", async () => {
+    const data = {
+      account: await gideon.getAccount(),
+      people: await gideon.peopleGetAll(),
+      instructions: await gideon.instructionsGet(),
+      smsConfig: await gideon.smsGetConfig(),
+      smsSettings: await gideon.smsSettingsGet(),
+      lowTouch: await gideon.lowTouchGet(),
+      convo: await gideon.convoGetConfig(),
+      securityFilters: await gideon.securityFiltersGet(),
+      vipOptions: await gideon.vipOptionsGet(),
+      autocheck: await gideon.autocheckGet(),
+      stats: await gideon.statsGet(),
+      exportDate: new Date().toISOString(),
+      version: await gideon.getVersion(),
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `gideonmail-config-${new Date().toISOString().split("T")[0]}.json`;
+    a.click(); URL.revokeObjectURL(url);
+    $("#btnExportConfig").textContent = "Exported!";
+    setTimeout(() => { $("#btnExportConfig").textContent = "Export Config"; }, 2000);
+  });
+
+  $("#btnImportConfig").addEventListener("click", () => { $("#importConfigFile").click(); });
+  $("#importConfigFile").addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!data.exportDate) { alert("Invalid config file"); return; }
+      if (!confirm(`Import config from ${data.exportDate}?\n\nThis will overwrite your current settings, sender lists, and instructions.`)) return;
+      // Re-import people
+      if (data.people) {
+        for (const p of data.people) {
+          await gideon.peopleAdd({ address: p.address, name: p.name, role: p.role });
+        }
+      }
+      // Re-import instructions
+      if (data.instructions) {
+        for (const inst of data.instructions) {
+          if (inst.text) await gideon.instructionsAdd(inst.text);
+        }
+      }
+      // Re-import settings
+      if (data.lowTouch) await gideon.lowTouchSet(data.lowTouch);
+      if (data.smsSettings) await gideon.smsSettingsSave(data.smsSettings);
+      if (data.convo) await gideon.convoSaveConfig(data.convo);
+      if (data.vipOptions) await gideon.vipOptionsSave(data.vipOptions);
+      alert("Config imported! Restart the app for all changes to take effect.");
+    } catch (err) { alert("Import failed: " + err.message); }
+    e.target.value = "";
+  });
+
+  // ── Stats Rendering ───────────────────────────────────────────────────
+  async function renderStats() {
+    const stats = await gideon.statsGet();
+    const total = stats.total || {};
+    const container = $("#statsContent");
+    if (!container) return;
+
+    const statDefs = [
+      { key: "spam_blocked", label: "Spam/scam blocked", icon: "🛡", color: "#ef4444" },
+      { key: "spam_deleted", label: "Spam deleted", icon: "🗑", color: "#ef4444" },
+      { key: "scam_blocked", label: "Scams detected", icon: "⚠", color: "#f59e0b" },
+      { key: "newsletters_filed", label: "Newsletters filed", icon: "📰", color: "#3b82f6" },
+      { key: "receipts_filed", label: "Receipts filed", icon: "🧾", color: "#22c55e" },
+      { key: "drafts_created", label: "Replies drafted", icon: "✏", color: "#a78bfa" },
+      { key: "commitments_tracked", label: "Commitments tracked", icon: "📋", color: "#f472b6" },
+      { key: "nudges_sent", label: "Follow-ups sent", icon: "📤", color: "#06b6d4" },
+      { key: "unsubscribed", label: "Newsletters unsubscribed", icon: "🚫", color: "#64748b" },
+      { key: "digests_sent", label: "Digests sent", icon: "📧", color: "#8b5cf6" },
+      { key: "emails_processed", label: "Inbox checks", icon: "📬", color: "#94a3b8" },
+    ];
+
+    container.innerHTML = statDefs.map((s) => {
+      const val = total[s.key] || 0;
+      if (!val) return "";
+      return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:12px;color:var(--fg2)">${s.icon} ${s.label}</span>
+        <span style="font-size:14px;font-weight:700;color:${s.color}">${val.toLocaleString()}</span>
+      </div>`;
+    }).filter(Boolean).join("") || '<div style="font-size:11px;color:var(--fg2);padding:8px 0">No stats yet. Enable Low Touch and start using the app.</div>';
+  }
 
   // Google Calendar OAuth
   $("#cfgGcalConnect").addEventListener("click", async () => {
@@ -921,7 +1158,8 @@ async function renderMessageList() {
 
     div.innerHTML = `
       <div class="msg-top">
-        <span class="msg-from" style="${fromColor}">${escHtml(m.from?.name || m.from?.address || "Unknown")}</span>
+        <input type="checkbox" class="msg-checkbox" data-uid="${m.uid}" style="margin-right:4px;cursor:pointer" ${(window._selectedUids || new Set()).has(m.uid) ? "checked" : ""} />
+        <span class="msg-from" style="${fromColor};flex:1">${escHtml(m.from?.name || m.from?.address || "Unknown")}</span>
         <span class="msg-date" style="${dateColor}">${formatDate(m.date)}</span>
       </div>
       <div class="msg-subject" style="${subjectColor}">${escHtml(m.subject)}</div>
@@ -931,7 +1169,14 @@ async function renderMessageList() {
         ${badge}
       </div>
     `;
-    div.addEventListener("click", () => openMessage(m.uid));
+    // Checkbox click
+    div.querySelector(".msg-checkbox").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const _sel = window._selectedUids || new Set();
+      if (e.target.checked) _sel.add(m.uid); else _sel.delete(m.uid);
+      if (window._updateBulkToolbar) window._updateBulkToolbar();
+    });
+    div.addEventListener("click", (e) => { if (e.target.classList.contains("msg-checkbox")) return; openMessage(m.uid); });
 
     // Draggable for move-to-folder
     div.draggable = true;
@@ -1606,11 +1851,14 @@ async function openRules() {
   $("#cfgVipAutoCalendar").checked = vipOpts.autoCalendar;
   $("#cfgVipAiReview").checked = vipOpts.aiReview;
 
-  // Low Touch settings
+  // Low Touch settings — show active/inactive state
   const lt = await gideon.lowTouchGet();
   $("#cfgAutoUnsub").checked = lt.autoUnsub;
   $("#cfgAutoNudge").checked = lt.autoNudge;
   $("#cfgNudgeDays").value = lt.nudgeDays || 5;
+  $("#cfgMaxPerCycle").value = lt.maxPerCycle || 100;
+  $("#cfgArchiveLookback").value = lt.archiveLookbackDays || 0;
+  $("#cfgDigestMax").value = lt.digestMaxEmails || 60;
   const voicePreview = $("#voiceProfilePreview");
   if (lt.voiceProfile) {
     voicePreview.textContent = lt.voiceProfile;
@@ -1618,10 +1866,28 @@ async function openRules() {
   } else {
     voicePreview.style.display = "none";
   }
+  // Update Low Touch status banner and dim controls when inactive
+  const ltBanner = $("#ltStatusBanner");
+  const ltNote = $("#ltInactiveNote");
+  const ltBody = $("#ltSettingsBody");
+  if (ltBanner) {
+    if (lt.enabled) {
+      ltBanner.innerHTML = '<span style="color:#4ade80">&#9679;</span> Low Touch is <b style="color:#4ade80">ON</b> &mdash; these settings are actively controlling your email';
+      ltBanner.style.background = "rgba(74,222,128,0.08)";
+      ltBanner.style.color = "var(--fg2)";
+    } else {
+      ltBanner.innerHTML = '<span style="color:#f87171">&#9679;</span> Low Touch is <b style="color:#f87171">OFF</b> &mdash; settings below are saved but not in use';
+      ltBanner.style.background = "rgba(248,113,113,0.06)";
+      ltBanner.style.color = "var(--fg2)";
+    }
+  }
+  if (ltNote) ltNote.style.display = lt.enabled ? "none" : "inline";
+  if (ltBody) ltBody.style.opacity = lt.enabled ? "1" : "0.45";
 
   $("#rulesModal").style.display = "flex";
   renderPeople();
   renderSettingsInstructions();
+  renderStats();
 }
 
 async function saveRulesSettings() {
@@ -1669,6 +1935,9 @@ async function saveRulesSettings() {
     autoUnsub: $("#cfgAutoUnsub").checked,
     autoNudge: $("#cfgAutoNudge").checked,
     nudgeDays: parseInt($("#cfgNudgeDays").value) || 5,
+    maxPerCycle: parseInt($("#cfgMaxPerCycle").value) || 100,
+    archiveLookbackDays: parseInt($("#cfgArchiveLookback").value) || 0,
+    digestMaxEmails: parseInt($("#cfgDigestMax").value) || 60,
   });
 }
 
