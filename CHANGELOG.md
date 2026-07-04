@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0 — 2026-07-04
+
+### Calendar view
+- New Calendar tab in the sidebar (appears when Google Calendar is connected and working)
+- Clean month grid with prev/next/today navigation; GideonMail-created events highlighted in yellow (marked via extendedProperties on creation)
+- Email-derived event candidates: AI scans inbox subjects for anything calendar-worthy and shows them as dashed chips with explicit Add (+) / Dismiss (✕) buttons — nothing is added to Google Calendar without a click
+- Cancellation detection: emails announcing a canceled event flag the matching calendar event in red with a one-click "remove from calendar" fix button (or a keep ✓)
+- Google Calendar connection is tested at startup; expired/revoked tokens surface a Reconnect banner
+
+### Fixes (from full feature audit)
+- Replies now thread correctly (In-Reply-To/References were never sent — fetchMessage didn't return messageId)
+- Delete, star, and attachment download now work in non-INBOX folders (were hardcoded to INBOX)
+- AI urgency triage no longer texts about the wrong emails (verdicts were counted, not mapped by position)
+- AI chat flag/read tools now respect their arguments instead of blindly toggling; bulk delete works in searched folders; tool loop capped at 15 rounds
+- Commitments are no longer permanently marked "nudged" when SMS isn't configured
+- Duplicate entries rejected when adding senders to lists
+- Delete key now deletes; "r" replies to the open message instead of opening a blank compose
+- Auto-unsubscribe restricted to RFC 8058 List-Unsubscribe headers with domain validation (body-link crawling removed — it confirms live addresses to spammers)
+
+### Removed
+- PhishTank filter (service defunct — no new API keys for years; every check silently failed open)
+- ClamAV filter (was never wired into scanning, and requires a daemon not present on Windows)
+
 ## 0.3.1 — 2026-07-04
 
 ### Spam pipeline fixes

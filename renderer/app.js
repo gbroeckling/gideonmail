@@ -131,18 +131,16 @@ const HELP = {
 **Use for:** Senders you don't want to block but don't need alerts for. Social media notifications, low-priority mailing lists.`
   },
   "security-filters": {
-    title: "Security Filters (8 Layers)",
-    text: `Eight independent scanning layers protect your inbox from threats. Only emails from unknown and blocked senders are scanned — VIP, Watch, Muted, and Daily Update senders are exempt.
+    title: "Security Filters (6 Layers)",
+    text: `Six independent scanning layers protect your inbox from threats. Only emails from unknown and blocked senders are scanned — VIP, Watch, Muted, and Daily Update senders are exempt.
 
 **Layer 0 — DKIM/DMARC/SPF:** Verifies sender authentication. Always runs. Detects spoofed addresses.
 **Layer 1 — SpamAssassin:** Reads server-side spam scores from your mail server.
 **Layer 2 — Spamhaus ZEN:** DNS blocklist lookup for sender IP.
 **Layer 3 — VirusTotal:** Scans URLs against 70+ antivirus engines (needs API key).
 **Layer 4 — Google Safe Browsing:** URL threat detection (needs API key).
-**Layer 5 — PhishTank:** Community-verified phishing URL database.
-**Layer 6 — AbuseIPDB:** IP reputation scoring (needs API key).
-**Layer 7 — ClamAV:** Local antivirus for attachments (needs ClamAV installed).
-**Layer 8 — Bayesian:** Pattern-based filter that learns from your actions over time.
+**Layer 5 — AbuseIPDB:** IP reputation scoring (needs API key).
+**Layer 6 — Bayesian:** Pattern-based filter that learns from your actions over time.
 
 **All API keys are free tier.** Most have generous daily limits.`
   },
@@ -457,6 +455,7 @@ async function init() {
     console.error("loadMessages failed:", e);
   }
   checkPendingAppointments();
+  checkGcalConnection();
 
   // Check service status and hide/disable features that can't run
   try {
@@ -1256,9 +1255,9 @@ Only output the reply body, no subject line.`,
     if (e.ctrlKey || e.altKey || e.metaKey) return;
 
     const key = e.key.toLowerCase();
-    if (key === "d" && currentMsg) { gideon.deleteMessage(currentMsg.uid); loadMessages(); } // Delete
-    else if (key === "r" && currentMsg) { $("#btnCompose").click(); } // Reply (opens compose)
-    else if (key === "s" && currentMsg) { gideon.toggleFlag(currentMsg.uid, "flagged"); } // Star/Flag
+    if ((key === "d" || e.key === "Delete") && currentMsg) { gideon.deleteMessage(currentMsg.uid, currentFolder); loadMessages(); } // Delete
+    else if (key === "r" && currentMsg) { $("#btnReply").click(); } // Reply to current message
+    else if (key === "s" && currentMsg) { gideon.toggleFlag(currentMsg.uid, "flagged", currentFolder); } // Star/Flag
     else if (key === "j") { // Next message
       const rows = [...$$(".msg-row")];
       const idx = rows.findIndex((r) => r.classList.contains("active"));
@@ -1305,12 +1304,12 @@ Only output the reply body, no subject line.`,
 
       if (action === "delete") {
         if (!confirm(`Delete ${uids.length} messages?`)) return;
-        for (const uid of uids) { try { await gideon.deleteMessage(uid); } catch (e) {} }
+        for (const uid of uids) { try { await gideon.deleteMessage(uid, currentFolder); } catch (e) {} }
       } else if (action === "read") {
         // Mark read handled by fetchMessage (marks as seen)
         for (const uid of uids) { try { await gideon.fetchMessage(uid); } catch (e) {} }
       } else if (action === "flag") {
-        for (const uid of uids) { try { await gideon.toggleFlag(uid, "flagged"); } catch (e) {} }
+        for (const uid of uids) { try { await gideon.toggleFlag(uid, "flagged", currentFolder); } catch (e) {} }
       } else if (action === "block") {
         const addrs = new Set();
         for (const uid of uids) {
@@ -1569,6 +1568,7 @@ let _allLoaded = false;
 let _totalMessages = 0;
 
 async function loadMessages() {
+  if ($("#calendarPane").style.display !== "none") showCalendar(false);
   currentPage = 0;
   _allLoaded = false;
 
@@ -1872,7 +1872,7 @@ async function deleteCurrent() {
   if (!currentUid) return;
   if (!confirm("Delete this message?")) return;
 
-  const result = await gideon.deleteMessage(currentUid);
+  const result = await gideon.deleteMessage(currentUid, currentFolder);
   if (result.ok) {
     currentUid = null;
     currentMsg = null;
@@ -1884,7 +1884,7 @@ async function deleteCurrent() {
 
 async function starCurrent() {
   if (!currentUid) return;
-  await gideon.toggleFlag(currentUid, "flagged");
+  await gideon.toggleFlag(currentUid, "flagged", currentFolder);
   const m = currentMessages.find((m) => m.uid === currentUid);
   if (m) m.flagged = !m.flagged;
   renderMessageList();
@@ -1893,7 +1893,7 @@ async function starCurrent() {
 }
 
 async function downloadAttachment(uid, filename) {
-  const result = await gideon.fetchAttachment(uid, filename);
+  const result = await gideon.fetchAttachment(uid, filename, currentFolder);
   if (result.error) { alert(result.error); return; }
 
   const blob = new Blob([Uint8Array.from(atob(result.data), (c) => c.charCodeAt(0))], { type: result.contentType });
@@ -2034,7 +2034,8 @@ async function sendCompose() {
 
   if (composeMode === "reply" || composeMode === "replyall") {
     opts.inReplyTo = currentMsg?.messageId;
-    opts.references = currentMsg?.references;
+    // References = parent's references + parent's Message-ID (RFC 5322 threading)
+    opts.references = [currentMsg?.references, currentMsg?.messageId].filter(Boolean).join(" ") || undefined;
   }
 
   const result = await gideon.sendMail(opts);
@@ -2437,9 +2438,7 @@ async function openRules() {
   $("#sfSpamhaus").checked = sf.spamhaus || false;
   $("#sfVirustotal").checked = sf.virustotal || false;
   $("#sfSafebrowsing").checked = sf.safebrowsing || false;
-  $("#sfPhishtank").checked = sf.phishtank || false;
   $("#sfAbuseipdb").checked = sf.abuseipdb || false;
-  $("#sfClamav").checked = sf.clamav || false;
   $("#sfBayesian").checked = sf.bayesian || false;
 
   // API keys
@@ -2527,9 +2526,7 @@ async function saveRulesSettings() {
     spamhaus: $("#sfSpamhaus").checked,
     virustotal: $("#sfVirustotal").checked,
     safebrowsing: $("#sfSafebrowsing").checked,
-    phishtank: $("#sfPhishtank").checked,
     abuseipdb: $("#sfAbuseipdb").checked,
-    clamav: $("#sfClamav").checked,
     bayesian: $("#sfBayesian").checked,
   });
   await gideon.autocheckSave({
@@ -2783,7 +2780,7 @@ async function aiTriageInbox() {
       if (!confirm(`Delete ${deleteUids.length} emails?\n\n${deleteNames.slice(0, 5).join("\n")}${deleteUids.length > 5 ? `\n...and ${deleteUids.length - 5} more` : ""}`)) return;
       addAIMessage(`Deleting ${deleteUids.length} emails...`, "system");
       for (const uid of deleteUids) {
-        try { await gideon.deleteMessage(uid); } catch (e) {}
+        try { await gideon.deleteMessage(uid, currentFolder); } catch (e) {}
       }
       addAIMessage(`Deleted ${deleteUids.length} emails.`, "system");
       await loadMessages();
@@ -2803,7 +2800,7 @@ async function aiTriageInbox() {
       if (!starUids.length) { addAIMessage("Couldn't match any urgent emails.", "error"); return; }
       addAIMessage(`Starring ${starUids.length} emails...`, "system");
       for (const uid of starUids) {
-        try { await gideon.toggleFlag(uid, "flagged"); } catch (e) {}
+        try { await gideon.toggleFlag(uid, "flagged", currentFolder); } catch (e) {}
       }
       addAIMessage(`Starred ${starUids.length} emails.`, "system");
       await loadMessages();
@@ -2838,8 +2835,8 @@ async function aiAnalyzeCurrent() {
   const actionDefs = [
     { label: "Reply", icon: "↩", action: () => openCompose("reply") },
     { label: "Forward", icon: "→", action: () => openCompose("forward") },
-    { label: "Delete", icon: "🗑", action: async () => { if (confirm("Delete this email?")) { await gideon.deleteMessage(currentMsg.uid); addAIMessage("Deleted.", "system"); loadMessages(); } } },
-    { label: "Star", icon: "⭐", action: async () => { await gideon.toggleFlag(currentMsg.uid, "flagged"); addAIMessage("Flagged.", "system"); } },
+    { label: "Delete", icon: "🗑", action: async () => { if (confirm("Delete this email?")) { await gideon.deleteMessage(currentMsg.uid, currentFolder); addAIMessage("Deleted.", "system"); loadMessages(); } } },
+    { label: "Star", icon: "⭐", action: async () => { await gideon.toggleFlag(currentMsg.uid, "flagged", currentFolder); addAIMessage("Flagged.", "system"); } },
     { label: "Archive", icon: "📁", action: () => { addAIMessage("Use drag-and-drop to move to a folder.", "system"); } },
     { label: "Draft Reply", icon: "✍", action: () => aiDraftReplyCurrent() },
     { label: "Create Task", icon: "📅", action: () => { $("#btnTask").click(); } },
@@ -3331,6 +3328,260 @@ function showTimePicker(event, existingEvents) {
     loadDay();
   });
 }
+
+// ── Google Calendar connection banner ───────────────────────────────────
+async function checkGcalConnection() {
+  try {
+    const r = await gideon.gcalCheckConnection();
+    $("#btnCalendar").style.display = r.status === "ok" ? "block" : "none";
+    if (r.status !== "expired") return; // ok or never connected — nothing to renew
+    $("#gcalBanner").style.display = "flex";
+    $("#gcalReconnect").onclick = async () => {
+      $("#gcalReconnect").textContent = "Waiting for Google...";
+      $("#gcalReconnect").disabled = true;
+      const res = await gideon.gcalAuthorize();
+      $("#gcalReconnect").textContent = "Reconnect";
+      $("#gcalReconnect").disabled = false;
+      if (res.ok) {
+        $("#gcalBanner").style.display = "none";
+        $("#btnCalendar").style.display = "block";
+      } else {
+        $("#gcalBannerText").textContent = "Reconnect failed: " + (res.error || "unknown error") + " — try again or use Settings.";
+      }
+    };
+    $("#gcalBannerDismiss").onclick = () => { $("#gcalBanner").style.display = "none"; };
+  } catch (e) { /* banner is best-effort */ }
+}
+
+// ── Calendar view ────────────────────────────────────────────────────────
+let calCursor = new Date();
+
+function showCalendar(show) {
+  $("#calendarPane").style.display = show ? "flex" : "none";
+  $("#listPane").style.display = show ? "none" : "flex";
+  $("#readPane").style.display = show ? "none" : "flex";
+  if (show) renderCalendar();
+}
+
+function _calDayKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+async function renderCalendar() {
+  const y = calCursor.getFullYear(), m = calCursor.getMonth();
+  $("#calTitle").textContent = calCursor.toLocaleString("default", { month: "long", year: "numeric" });
+
+  // 6-week grid starting the Sunday on/before the 1st
+  const first = new Date(y, m, 1);
+  const gridStart = new Date(y, m, 1 - first.getDay());
+  const gridEnd = new Date(gridStart);
+  gridEnd.setDate(gridStart.getDate() + 42);
+
+  let events = [];
+  try {
+    const r = await gideon.gcalGetEvents(gridStart.toISOString(), gridEnd.toISOString());
+    if (r.events) events = r.events;
+    else if (r.error) console.error("Calendar events:", r.error);
+  } catch (e) { console.error("Calendar events:", e); }
+
+  const byDay = {};
+  for (const ev of events) {
+    const key = ev.allDay ? ev.start.slice(0, 10) : _calDayKey(new Date(ev.start));
+    (byDay[key] = byDay[key] || []).push(ev);
+  }
+
+  const todayKey = _calDayKey(new Date());
+  const grid = $("#calGrid");
+  grid.innerHTML = "";
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(gridStart);
+    d.setDate(gridStart.getDate() + i);
+    const key = _calDayKey(d);
+
+    const cell = document.createElement("div");
+    cell.className = "cal-day" + (d.getMonth() !== m ? " other-month" : "") + (key === todayKey ? " today" : "");
+    cell.dataset.key = key;
+    const num = document.createElement("div");
+    num.className = "cal-day-num";
+    num.textContent = d.getDate();
+    cell.appendChild(num);
+
+    const dayEvents = byDay[key] || [];
+    const MAX_CHIPS = 4;
+    for (const ev of dayEvents.slice(0, MAX_CHIPS)) {
+      const chip = document.createElement("div");
+      chip.className = "cal-event" + (ev.gideon ? " gideon" : "");
+      chip.dataset.evId = ev.id;
+      const time = ev.allDay ? "" : new Date(ev.start).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + " ";
+      chip.textContent = time + ev.title;
+      chip.title = ev.title + (time ? `\n${time.trim()}` : "\nAll day") +
+        (ev.location ? `\n${ev.location}` : "") + (ev.gideon ? "\nCreated by GideonMail" : "");
+      cell.appendChild(chip);
+    }
+    if (dayEvents.length > MAX_CHIPS) {
+      const more = document.createElement("div");
+      more.className = "cal-event-more";
+      more.textContent = `+${dayEvents.length - MAX_CHIPS} more`;
+      cell.appendChild(more);
+    }
+    grid.appendChild(cell);
+  }
+
+  // Phase 2: append email-derived candidates once the (possibly slow) scan returns
+  const seq = ++_calRenderSeq;
+  try {
+    const c = await gideon.calendarCandidatesScan(
+      currentMessages.map((msg) => ({ uid: msg.uid, from: msg.from, subject: msg.subject, date: msg.date }))
+    );
+    if (seq !== _calRenderSeq) return; // a newer render replaced this grid
+    for (const cand of c.items || []) {
+      const cell = grid.querySelector(`.cal-day[data-key="${cand.date}"]`);
+      if (!cell) continue;
+      if (cand.kind === "cancel") {
+        // Email says an event was canceled — find the matching calendar event
+        const target = (byDay[cand.date] || []).find((ev) => _calTitleMatch(ev.title, cand.title));
+        const chipEl = target ? cell.querySelector(`.cal-event[data-ev-id="${CSS.escape(target.id)}"]`) : null;
+        if (target && chipEl) _calMarkCanceled(chipEl, target, cand);
+        else cell.appendChild(_calCancelNoticeChip(cand));
+      } else {
+        cell.appendChild(_calCandidateChip(cand));
+      }
+    }
+  } catch (e) { console.error("Calendar candidates:", e); }
+}
+
+let _calRenderSeq = 0;
+
+// Loose title match: containment or ≥50% overlap of significant words
+function _calTitleMatch(a, b) {
+  const norm = (s) => (s || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  const na = norm(a), nb = norm(b);
+  if (!na || !nb) return false;
+  if (na.includes(nb) || nb.includes(na)) return true;
+  const wa = new Set(na.split(" ").filter((w) => w.length > 2));
+  const wb = nb.split(" ").filter((w) => w.length > 2);
+  if (!wa.size || !wb.length) return false;
+  const overlap = wb.filter((w) => wa.has(w)).length;
+  return overlap / Math.min(wa.size, wb.length) >= 0.5;
+}
+
+// Restyle an existing event chip as canceled-per-email, with a one-click fix button
+function _calMarkCanceled(chipEl, ev, cand) {
+  const text = chipEl.textContent;
+  chipEl.classList.add("cancel-flagged");
+  chipEl.textContent = "";
+
+  const label = document.createElement("span");
+  label.className = "cal-cand-label";
+  label.textContent = "✖ " + text;
+  label.title = `An email says this event was canceled:\n"${cand.subject}"\nFrom: ${cand.from}\n\nClick ✖ to remove it from Google Calendar.`;
+  chipEl.appendChild(label);
+
+  const btnFix = document.createElement("button");
+  btnFix.className = "cal-cand-btn dismiss";
+  btnFix.textContent = "✖";
+  btnFix.title = "Remove this event from Google Calendar";
+  btnFix.onclick = async () => {
+    btnFix.disabled = true;
+    const r = await gideon.gcalDeleteEvent(ev.id);
+    if (r.ok) {
+      await gideon.calendarCandidateResolve(cand.uid, cand.date);
+      renderCalendar();
+    } else {
+      btnFix.disabled = false;
+      label.textContent = "⚠ " + (r.error || "remove failed");
+    }
+  };
+  chipEl.appendChild(btnFix);
+
+  const btnKeep = document.createElement("button");
+  btnKeep.className = "cal-cand-btn";
+  btnKeep.textContent = "✓";
+  btnKeep.title = "Keep the event — the cancellation notice is wrong / already handled";
+  btnKeep.onclick = async () => {
+    await gideon.calendarCandidateResolve(cand.uid, cand.date);
+    renderCalendar();
+  };
+  chipEl.appendChild(btnKeep);
+}
+
+// Cancellation notice with no matching calendar event — informational only
+function _calCancelNoticeChip(cand) {
+  const chip = document.createElement("div");
+  chip.className = "cal-event cancel-notice";
+
+  const label = document.createElement("span");
+  label.className = "cal-cand-label";
+  label.textContent = "✖ canceled: " + cand.title;
+  label.title = `An email says this event was canceled, but no matching event was found on this day.\n"${cand.subject}"\nFrom: ${cand.from}`;
+  chip.appendChild(label);
+
+  const btnX = document.createElement("button");
+  btnX.className = "cal-cand-btn dismiss";
+  btnX.textContent = "✕";
+  btnX.title = "Dismiss";
+  btnX.onclick = async () => {
+    await gideon.calendarCandidateResolve(cand.uid, cand.date);
+    chip.remove();
+  };
+  chip.appendChild(btnX);
+
+  return chip;
+}
+
+function _calCandidateChip(cand) {
+  const chip = document.createElement("div");
+  chip.className = "cal-event candidate";
+
+  const label = document.createElement("span");
+  label.className = "cal-cand-label";
+  label.textContent = "✉ " + (cand.startTime ? cand.startTime + " " : "") + cand.title;
+  label.title = `Possible event found in email — not on your calendar yet\n"${cand.subject}"\nFrom: ${cand.from}` +
+    (cand.location ? `\nLocation: ${cand.location}` : "");
+  chip.appendChild(label);
+
+  const btnAdd = document.createElement("button");
+  btnAdd.className = "cal-cand-btn";
+  btnAdd.textContent = "+";
+  btnAdd.title = "Add to Google Calendar";
+  btnAdd.onclick = async () => {
+    btnAdd.disabled = true;
+    const r = await gideon.gcalCreateEvent({
+      title: cand.title,
+      date: cand.date,
+      startTime: cand.startTime || undefined,
+      endTime: cand.endTime || undefined,
+      location: cand.location || "",
+      description: `From email: "${cand.subject}" (${cand.from})`,
+    });
+    if (r.ok) {
+      await gideon.calendarCandidateResolve(cand.uid, cand.date);
+      renderCalendar();
+    } else {
+      btnAdd.disabled = false;
+      label.textContent = "⚠ " + (r.error || "add failed");
+    }
+  };
+  chip.appendChild(btnAdd);
+
+  const btnX = document.createElement("button");
+  btnX.className = "cal-cand-btn dismiss";
+  btnX.textContent = "✕";
+  btnX.title = "Dismiss — not a real event";
+  btnX.onclick = async () => {
+    await gideon.calendarCandidateResolve(cand.uid, cand.date);
+    chip.remove();
+  };
+  chip.appendChild(btnX);
+
+  return chip;
+}
+
+$("#btnCalendar").addEventListener("click", () => showCalendar($("#calendarPane").style.display === "none"));
+$("#calClose").addEventListener("click", () => showCalendar(false));
+$("#calToday").addEventListener("click", () => { calCursor = new Date(); renderCalendar(); });
+$("#calPrev").addEventListener("click", () => { calCursor = new Date(calCursor.getFullYear(), calCursor.getMonth() - 1, 1); renderCalendar(); });
+$("#calNext").addEventListener("click", () => { calCursor = new Date(calCursor.getFullYear(), calCursor.getMonth() + 1, 1); renderCalendar(); });
 
 // ── Pending appointments banner ──────────────────────────────────────────
 let currentPendingUid = null;

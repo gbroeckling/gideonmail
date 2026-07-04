@@ -224,31 +224,6 @@ async function checkSafeBrowsing(urls, apiKey) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 5. PhishTank
-// ═══════════════════════════════════════════════════════════════════════════
-async function checkPhishTank(urls) {
-  if (!urls.length) return { phishing: 0, details: "" };
-  const hits = [];
-  for (const url of urls.slice(0, 3)) {
-    try {
-      const body = `format=json&url=${encodeURIComponent(url)}`;
-      const res = await httpsRequest("https://checkurl.phishtank.com/checkurl/", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body,
-      });
-      if (res.data?.results?.in_database && res.data.results.valid) {
-        hits.push(url.substring(0, 40));
-      }
-    } catch (e) { /* skip */ }
-  }
-  return {
-    phishing: hits.length,
-    details: hits.length ? `PhishTank: ${hits.length} phishing URL${hits.length > 1 ? "s" : ""}` : "",
-  };
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // 6. AbuseIPDB
 // ═══════════════════════════════════════════════════════════════════════════
 async function checkAbuseIPDB(ip, apiKey) {
@@ -264,28 +239,6 @@ async function checkAbuseIPDB(ip, apiKey) {
     };
   } catch (e) {
     return { score: 0, details: "" };
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 7. ClamAV (local scan via clamdscan)
-// ═══════════════════════════════════════════════════════════════════════════
-async function checkClamAV(filePath) {
-  if (!filePath) return { infected: false, details: "" };
-  try {
-    const { exec } = require("child_process");
-    return new Promise((resolve) => {
-      exec(`clamdscan --no-summary "${filePath}"`, { timeout: 30000 }, (err, stdout) => {
-        if (err && err.code === 1) {
-          // Code 1 = virus found
-          resolve({ infected: true, details: `ClamAV: ${stdout.trim()}` });
-        } else {
-          resolve({ infected: false, details: "" });
-        }
-      });
-    });
-  } catch (e) {
-    return { infected: false, details: "" };
   }
 }
 
@@ -386,13 +339,6 @@ async function scanEmail(email, headers, filters, apiKeys, bayesian) {
     if (sb.details) results.details.push(sb.details);
   }
 
-  // 5. PhishTank
-  if (filters.phishtank && urls.length) {
-    const pt = await checkPhishTank(urls);
-    if (pt.phishing) { results.flags.push("phishtank"); results.score += pt.phishing * 10; }
-    if (pt.details) results.details.push(pt.details);
-  }
-
   // 6. AbuseIPDB
   if (filters.abuseipdb && senderIp && apiKeys.abuseipdb) {
     const ab = await checkAbuseIPDB(senderIp, apiKeys.abuseipdb);
@@ -419,8 +365,6 @@ module.exports = {
   checkSpamhaus,
   checkVirusTotal,
   checkSafeBrowsing,
-  checkPhishTank,
   checkAbuseIPDB,
-  checkClamAV,
   BayesianFilter,
 };

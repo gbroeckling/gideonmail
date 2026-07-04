@@ -443,6 +443,9 @@ async function fetchMessage(uid, folder) {
         to: (parsed.to?.value || []),
         cc: (parsed.cc?.value || []),
         date: parsed.date?.toISOString(),
+        // Needed for In-Reply-To/References on replies — without these, replies never thread
+        messageId: parsed.messageId || "",
+        references: parsed.references || "",
         html: parsed.html || "",
         text: (parsed.text || "") + icsText,
         icsText,
@@ -475,9 +478,9 @@ async function fetchMessage(uid, folder) {
   }
 }
 
-async function fetchAttachment(uid, filename) {
+async function fetchAttachment(uid, filename, folder) {
   async function _downloadAtt(client) {
-    const lock = await client.getMailboxLock("INBOX");
+    const lock = await client.getMailboxLock(folder || "INBOX");
     try {
       const raw = await client.download(uid.toString(), undefined, { uid: true });
       if (!raw || !raw.content) throw new Error("Download returned empty");
@@ -500,9 +503,9 @@ async function fetchAttachment(uid, filename) {
   }
 }
 
-async function deleteMessage(uid) {
+async function deleteMessage(uid, folder) {
   const client = await getImapClient();
-  const lock = await client.getMailboxLock("INBOX");
+  const lock = await client.getMailboxLock(folder || "INBOX");
   try {
     await client.messageFlagsAdd(uid.toString(), ["\\Deleted"], { uid: true });
     await client.messageDelete(uid.toString(), { uid: true });
@@ -511,9 +514,9 @@ async function deleteMessage(uid) {
   }
 }
 
-async function toggleFlag(uid, flag) {
+async function toggleFlag(uid, flag, folder) {
   const client = await getImapClient();
-  const lock = await client.getMailboxLock("INBOX");
+  const lock = await client.getMailboxLock(folder || "INBOX");
   try {
     const msgs = [];
     for await (const m of client.fetch(uid.toString(), { flags: true, uid: true })) {
@@ -530,6 +533,20 @@ async function toggleFlag(uid, flag) {
     } else {
       await client.messageFlagsAdd(uid.toString(), [imapFlag], { uid: true });
     }
+  } finally {
+    lock.release();
+  }
+}
+
+// Set a flag to an explicit state (unlike toggleFlag, which flips whatever is there)
+async function setFlag(uid, flag, on) {
+  const client = await getImapClient();
+  const lock = await client.getMailboxLock("INBOX");
+  try {
+    const imapFlag = flag === "flagged" ? "\\Flagged" : flag === "seen" ? "\\Seen" : null;
+    if (!imapFlag) return;
+    if (on) await client.messageFlagsAdd(uid.toString(), [imapFlag], { uid: true });
+    else await client.messageFlagsRemove(uid.toString(), [imapFlag], { uid: true });
   } finally {
     lock.release();
   }
@@ -1610,36 +1627,10 @@ async function autoUnsubscribe(uid, senderAddress) {
         const unsubHeader = parsed.headers?.get("list-unsubscribe") || "";
         const unsubPost = parsed.headers?.get("list-unsubscribe-post") || "";
 
-        // Fallback: if no List-Unsubscribe header, scan body for unsubscribe links
-        if (!unsubHeader) {
-          const bodyHtml = parsed.html || "";
-          const bodyText = parsed.text || "";
-          // Look for unsubscribe links in HTML (most common pattern)
-          const unsubLinkMatch = bodyHtml.match(/<a[^>]+href=["'](https?:\/\/[^"']+unsubscribe[^"']*|https?:\/\/[^"']*opt[_-]?out[^"']*|https?:\/\/[^"']*remove[^"']*|https?:\/\/[^"']*preferences[^"']*)['"]/i)
-            || bodyText.match(/(https?:\/\/\S*unsubscribe\S*|https?:\/\/\S*opt[_-]?out\S*)/i);
-          if (unsubLinkMatch) {
-            const unsubUrl = unsubLinkMatch[1];
-            try {
-              const mod = unsubUrl.startsWith("https") ? require("https") : require("http");
-              await new Promise((resolve) => {
-                const urlParsed = new URL(unsubUrl);
-                const req = mod.request({
-                  hostname: urlParsed.hostname, port: urlParsed.port,
-                  path: urlParsed.pathname + urlParsed.search,
-                  method: "GET",
-                  headers: { "User-Agent": "GideonMail/1.0" },
-                }, (r) => { r.resume(); r.on("end", () => resolve(true)); });
-                req.on("error", () => resolve(false));
-                req.end();
-              });
-              console.log(`Auto-unsubscribe (body link): ${unsubUrl}`);
-              _incrementStat("unsubscribed");
-              _logAutoAction("unsub-body", senderAddress, unsubUrl, "Unsubscribed via body link");
-              return true;
-            } catch (e) {}
-          }
-          return false;
-        }
+        // No List-Unsubscribe header → do nothing. Following body links is unsafe:
+        // it confirms a live address to spammers and fetches attacker-controlled URLs.
+        // Safe automation is RFC 8058 headers only (mailto / one-click POST below).
+        if (!unsubHeader) return false;
 
         // Try mailto: unsubscribe first (most reliable)
         const mailtoMatch = unsubHeader.match(/<mailto:([^>]+)>/i);
@@ -1681,6 +1672,13 @@ async function autoUnsubscribe(uid, senderAddress) {
         const httpMatch = unsubHeader.match(/<(https?:\/\/[^>]+)>/i);
         if (httpMatch && unsubPost) {
           const url = httpMatch[1];
+          // Safeguard #7 (same as mailto path): target host must relate to sender domain
+          const unsubHost = (() => { try { return new URL(url).hostname; } catch (e) { return ""; } })();
+          if (senderDomain && unsubHost && !unsubHost.includes(senderDomain) && !senderDomain.includes(unsubHost.split(".").slice(-2).join("."))) {
+            console.log(`Auto-unsubscribe BLOCKED: ${unsubHost} doesn't match sender ${senderAddress}`);
+            _logAutoAction("unsub-blocked", senderAddress, url, "Domain mismatch — possible weaponized unsubscribe");
+            return false;
+          }
           try {
             const mod = url.startsWith("https") ? require("https") : require("http");
             await new Promise((resolve) => {
@@ -3280,15 +3278,15 @@ Default to SKIP. When in doubt, SKIP. Only 1 in 50 emails should be URGENT.${get
     });
 
     const triageText = response.content[0]?.text || "";
-    const urgentLines = triageText.split("\n").filter((l) => l.toUpperCase().startsWith("URGENT"));
+    // One verdict line per email, in prompt order — map verdicts back by position
+    // (counting URGENT lines and slicing from the top alerts about the wrong emails)
+    const verdictLines = triageText.split("\n").map((l) => l.trim().toUpperCase()).filter((l) => l.startsWith("URGENT") || l.startsWith("SKIP"));
+    const urgent = untriaged.slice(0, 5).filter((m, i) => (verdictLines[i] || "").startsWith("URGENT"));
 
-    if (urgentLines.length > 0) {
-      const urgentSummary = untriaged.slice(0, urgentLines.length).map((m, i) => {
-        return `${m.from?.name || m.from?.address}: ${m.subject}`;
-      }).join("\n");
-
-      await sendAlert(`GideonMail: ${urgentLines.length} urgent email${urgentLines.length > 1 ? "s" : ""}:\n${urgentSummary}`);
-      untriaged.slice(0, urgentLines.length).forEach((m) => _addSmsSentUid(m.uid));
+    if (urgent.length > 0) {
+      const urgentSummary = urgent.map((m) => `${m.from?.name || m.from?.address}: ${m.subject}`).join("\n");
+      await sendAlert(`GideonMail: ${urgent.length} urgent email${urgent.length > 1 ? "s" : ""}:\n${urgentSummary}`);
+      urgent.forEach((m) => _addSmsSentUid(m.uid));
     }
   } catch (e) {
     console.error("AI auto-triage failed:", e.message);
@@ -3300,7 +3298,7 @@ Default to SKIP. When in doubt, SKIP. Only 1 in 50 emails should be URGENT.${get
 
 // ── Security filters ────────────────────────────────────────────────────
 async function runSecurityFilters(messages) {
-  const filters = store.get("security_filters") || { spamassassin: true, spamhaus: false, virustotal: false, safebrowsing: false, phishtank: false, abuseipdb: false };
+  const filters = store.get("security_filters") || { spamassassin: true, spamhaus: false, virustotal: false, safebrowsing: false, abuseipdb: false };
   const results = {};
 
   for (const m of messages) {
@@ -3443,9 +3441,9 @@ ipcMain.handle("fetch-message", async (_, uid, folder) => {
   }
 });
 
-ipcMain.handle("fetch-attachment", async (_, uid, filename) => {
+ipcMain.handle("fetch-attachment", async (_, uid, filename, folder) => {
   try {
-    return await fetchAttachment(uid, filename);
+    return await fetchAttachment(uid, filename, folder);
   } catch (e) {
     return { error: e.message };
   }
@@ -3464,22 +3462,22 @@ ipcMain.handle("send-mail", async (_, opts) => {
   }
 });
 
-ipcMain.handle("delete-message", async (_, uid) => {
+ipcMain.handle("delete-message", async (_, uid, folder) => {
   try {
     // Track sender reputation before deleting
     const msgs = store.get("_last_inbox_messages") || [];
     const match = msgs.find((m) => m.uid === uid);
     if (match) _trackSenderAction(match.from?.address, "deleted");
-    await deleteMessage(uid);
+    await deleteMessage(uid, folder);
     return { ok: true };
   } catch (e) {
     return { error: e.message };
   }
 });
 
-ipcMain.handle("toggle-flag", async (_, uid, flag) => {
+ipcMain.handle("toggle-flag", async (_, uid, flag, folder) => {
   try {
-    await toggleFlag(uid, flag);
+    await toggleFlag(uid, flag, folder);
     return { ok: true };
   } catch (e) {
     return { error: e.message };
@@ -3703,6 +3701,7 @@ const EMAIL_TOOLS = [
       type: "object",
       properties: {
         uids: { type: "array", items: { type: "number" }, description: "Array of email UIDs to delete" },
+        folder: { type: "string", description: "Folder the UIDs came from (same folder you searched). Default: INBOX" },
         reason: { type: "string", description: "Brief reason for deletion (for confirmation message)" },
       },
       required: ["uids"],
@@ -3759,13 +3758,13 @@ async function executeEmailTool(toolName, toolInput, emailContext) {
     }
     case "flag_email": {
       if (!emailContext?.uid) return { error: "No email open" };
-      await toggleFlag(emailContext.uid, "flagged");
-      return { success: true, message: toolInput.flagged ? "Email flagged" : "Email unflagged" };
+      await setFlag(emailContext.uid, "flagged", toolInput.flagged !== false);
+      return { success: true, message: toolInput.flagged !== false ? "Email flagged" : "Email unflagged" };
     }
     case "mark_read_unread": {
       if (!emailContext?.uid) return { error: "No email open" };
-      await toggleFlag(emailContext.uid, "seen");
-      return { success: true, message: toolInput.read ? "Marked as read" : "Marked as unread" };
+      await setFlag(emailContext.uid, "seen", toolInput.read !== false);
+      return { success: true, message: toolInput.read !== false ? "Marked as read" : "Marked as unread" };
     }
     case "send_new_email": {
       await sendMail({ to: toolInput.to, subject: toolInput.subject, text: toolInput.body, html: toolInput.body.replace(/\n/g, "<br>") });
@@ -3822,7 +3821,8 @@ async function executeEmailTool(toolName, toolInput, emailContext) {
       if (!toolInput.uids || !toolInput.uids.length) return { error: "No UIDs provided" };
       const client = await createFreshImapClient();
       try {
-        const lock = await client.getMailboxLock("INBOX");
+        // UIDs are folder-relative — must delete in the folder they were found in
+        const lock = await client.getMailboxLock(toolInput.folder || "INBOX");
         try {
           await client.messageFlagsAdd({ uid: toolInput.uids }, ["\\Deleted"]);
           await client.messageDelete({ uid: toolInput.uids });
@@ -3909,9 +3909,11 @@ When the user asks to read a specific email from search results, use read_email_
     tools: EMAIL_TOOLS,
   });
 
-  // Process tool calls in a loop
+  // Process tool calls in a loop (hard-capped — an unbounded loop is unbounded API spend)
   const actionLog = [];
-  while (response.stop_reason === "tool_use") {
+  let toolRounds = 0;
+  const MAX_TOOL_ROUNDS = 15;
+  while (response.stop_reason === "tool_use" && ++toolRounds <= MAX_TOOL_ROUNDS) {
     const assistantContent = response.content;
     conversationHistory.push({ role: "assistant", content: assistantContent });
 
@@ -4150,9 +4152,7 @@ ipcMain.handle("security-filters-get", () => {
     spamhaus: false,
     virustotal: false,
     safebrowsing: false,
-    phishtank: false,
     abuseipdb: false,
-    clamav: false,
     bayesian: false,
   };
 });
@@ -4385,6 +4385,13 @@ ipcMain.handle("people-add", (_, entry) => {
     enabled: true,
     created: new Date().toISOString(),
   };
+
+  // Reject duplicates: same address already on this role's list
+  const roleKeys = { customer: "customer_list", vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
+  const existing = store.get(roleKeys[role] || "sms_whitelist") || [];
+  if (base.address && existing.some((e) => (e.address || "").toLowerCase() === base.address)) {
+    return { ok: false, error: `${base.address} is already on the ${role} list` };
+  }
 
   if (role === "customer") {
     const list = store.get("customer_list") || [];
@@ -4949,6 +4956,8 @@ ipcMain.handle("gcal-create-event", async (_, event) => {
       location: eventLocation,
       start: { dateTime: startDateTime, timeZone: timezone },
       end: { dateTime: endDateTime, timeZone: timezone },
+      // Marks the event as GideonMail-created (calendar view highlights these)
+      extendedProperties: { private: { gideonmail: "1" } },
     };
     // Only include attendees if explicitly approved (event.attendeesApproved === true)
     const hasApprovedAttendees = event.attendeesApproved && event.attendees?.length;
@@ -4990,6 +4999,139 @@ ipcMain.handle("gcal-create-event", async (_, event) => {
   } catch (e) {
     return { error: e.message };
   }
+});
+
+// Get events in a date range (calendar view)
+ipcMain.handle("gcal-get-events", async (_, timeMin, timeMax) => {
+  try {
+    const calId = store.get("google_calendar_id") || "primary";
+    const token = await googleAuth.getToken();
+    const params = new URLSearchParams({
+      timeMin, timeMax,
+      singleEvents: "true",
+      orderBy: "startTime",
+      maxResults: "250",
+    }).toString();
+    const https = require("https");
+    const res = await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: "www.googleapis.com",
+        path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?${params}`,
+        method: "GET",
+        headers: { "Authorization": `Bearer ${token}` },
+      }, (r) => {
+        let data = "";
+        r.on("data", (d) => { data += d; });
+        r.on("end", () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error("Invalid calendar response")); } });
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    if (res.error) return { error: res.error.message || "Calendar API error" };
+    const events = (res.items || []).map((ev) => ({
+      id: ev.id,
+      title: ev.summary || "(no title)",
+      start: ev.start?.dateTime || ev.start?.date || "",
+      end: ev.end?.dateTime || ev.end?.date || "",
+      allDay: !ev.start?.dateTime,
+      location: ev.location || "",
+      gideon: ev.extendedProperties?.private?.gideonmail === "1" || /gideonmail/i.test(ev.description || ""),
+    }));
+    return { events };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+// Scan inbox messages for "possible calendar" items (batched AI, cached per-UID).
+// Nothing is added to Google Calendar here — the calendar view renders these as
+// candidates with an explicit Add button; only that click creates a real event.
+ipcMain.handle("calendar-candidates-scan", async (_, messages) => {
+  try {
+    if (!store.get("anthropic_api_key")) return { items: [] };
+    const cache = store.get("calendar_candidates") || { scannedUids: [], items: [] };
+    const scanned = new Set(cache.scannedUids);
+    const fresh = (messages || []).filter((m) => m && m.uid && !scanned.has(m.uid)).slice(0, 50);
+    if (fresh.length) {
+      const list = fresh.map((m) =>
+        `uid=${m.uid} | from=${m.from?.name || ""} <${m.from?.address || ""}> | received=${String(m.date || "").slice(0, 10)} | subject=${(m.subject || "").slice(0, 150)}`
+      ).join("\n");
+      const client = getAnthropicClient();
+      const resp = await client.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1500,
+        system: `Today is ${new Date().toISOString().slice(0, 10)}. You screen email subject lines for anything that could belong on a calendar: appointments, meetings, deliveries, deadlines, events, reservations, renewals, due dates. Cast a wide net — a human reviews every candidate manually — but each candidate MUST have a concrete resolvable date. Respond ONLY with a JSON array (may be empty):
+[{"uid": 123, "kind": "add", "title": "short event title", "date": "YYYY-MM-DD", "startTime": "HH:MM or null", "endTime": "HH:MM or null", "location": ""}]
+kind is "add" for a new event, or "cancel" when the email says an existing event/appointment/meeting is CANCELED, called off, postponed, or will not happen — for cancels, title = the canceled event's name and date = the date the event was scheduled for (if determinable).
+Skip emails with no date-anchored event.`,
+        messages: [{ role: "user", content: list }],
+      });
+      const text = resp.content?.[0]?.text || "[]";
+      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      let found = [];
+      try { found = JSON.parse(jsonMatch ? jsonMatch[0] : "[]"); } catch (e) { found = []; }
+      const byUid = new Map(fresh.map((m) => [String(m.uid), m]));
+      for (const f of found) {
+        const src = byUid.get(String(f.uid));
+        if (!src || !f.date || !/^\d{4}-\d{2}-\d{2}$/.test(f.date)) continue;
+        cache.items.push({
+          uid: src.uid,
+          kind: f.kind === "cancel" ? "cancel" : "add",
+          title: String(f.title || src.subject || "").slice(0, 100),
+          date: f.date,
+          startTime: f.startTime && /^\d{2}:\d{2}$/.test(f.startTime) ? f.startTime : null,
+          endTime: f.endTime && /^\d{2}:\d{2}$/.test(f.endTime) ? f.endTime : null,
+          location: String(f.location || "").slice(0, 200),
+          from: src.from?.address || "",
+          subject: src.subject || "",
+        });
+      }
+      for (const m of fresh) scanned.add(m.uid);
+      cache.scannedUids = [...scanned].slice(-1000);
+      // Drop stale candidates (event date >60 days past) and cap the list
+      const staleCutoff = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
+      cache.items = cache.items.filter((it) => it.date >= staleCutoff).slice(-200);
+      store.set("calendar_candidates", cache);
+    }
+    return { items: cache.items };
+  } catch (e) {
+    logToFile(`ERROR calendar candidate scan: ${e.message}`);
+    return { items: [], error: e.message };
+  }
+});
+
+// Delete an event from Google Calendar (used by the calendar view's cancel-fix button)
+ipcMain.handle("gcal-delete-event", async (_, eventId) => {
+  try {
+    const calId = store.get("google_calendar_id") || "primary";
+    const token = await googleAuth.getToken();
+    const https = require("https");
+    const status = await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: "www.googleapis.com",
+        path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events/${encodeURIComponent(eventId)}?sendUpdates=none`,
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${token}` },
+      }, (r) => { r.resume(); r.on("end", () => resolve(r.statusCode)); });
+      req.on("error", reject);
+      req.end();
+    });
+    if (status === 200 || status === 204 || status === 410) {
+      _logAutoAction("gcal-event-delete", "calendar-view", eventId, "Event removed via cancellation fix button");
+      return { ok: true };
+    }
+    return { error: `Google Calendar API error ${status}` };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+// Remove a candidate after the user adds it to Google Calendar or dismisses it
+ipcMain.handle("calendar-candidate-resolve", (_, uid, dateKey) => {
+  const cache = store.get("calendar_candidates") || { scannedUids: [], items: [] };
+  cache.items = cache.items.filter((it) => !(it.uid === uid && it.date === dateKey));
+  store.set("calendar_candidates", cache);
+  return { ok: true };
 });
 
 // Get events for a specific day
@@ -5095,6 +5237,19 @@ ipcMain.handle("gcal-status", () => {
     connected: googleAuth.isConnected,
     clientId: store.get("google_client_id") ? "••••••••" : "",
   };
+});
+
+// Live connection test: actually exercises the refresh token, so a revoked/
+// expired grant is detected at startup instead of failing silently on first use
+ipcMain.handle("gcal-check-connection", async () => {
+  if (!googleAuth.isConfigured || !googleAuth.isConnected) return { status: "not_connected" };
+  try {
+    await googleAuth.refresh();
+    return { status: "ok" };
+  } catch (e) {
+    logToFile(`WARN Google Calendar token refresh failed: ${e.message}`);
+    return { status: "expired", error: e.message };
+  }
 });
 
 ipcMain.handle("gcal-save-credentials", (_, clientId, clientSecret) => {
@@ -5493,9 +5648,13 @@ async function checkCommitments() {
     await sendAlert(`Commitments:\n${alerts.join("\n")}`);
   }
 
-  const nudgeArr = [...nudged];
-  if (nudgeArr.length > 200) nudgeArr.splice(0, nudgeArr.length - 200);
-  store.set("commitment_nudged", nudgeArr);
+  // Only persist the nudged set if the alert could actually be delivered —
+  // otherwise commitments get permanently silenced before SMS is even configured
+  if (alerts.length === 0 || smsTo) {
+    const nudgeArr = [...nudged];
+    if (nudgeArr.length > 200) nudgeArr.splice(0, nudgeArr.length - 200);
+    store.set("commitment_nudged", nudgeArr);
+  }
 }
 
 // ── Smart Digest Email ──────────────────────────────────────────────────
@@ -5912,6 +6071,7 @@ For meetingLink: extract any Zoom, Teams, Google Meet, Webex, GoTo, or other vid
       description,
       start: { dateTime: slotStart.toISOString(), timeZone: timezone },
       end: { dateTime: slotEnd.toISOString(), timeZone: timezone },
+      extendedProperties: { private: { gideonmail: "1" } },
     };
     if (location) eventBody.location = location;
     // For online meetings, put the link in the location if no physical location

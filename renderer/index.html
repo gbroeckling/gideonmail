@@ -34,6 +34,7 @@
         <span class="help-btn" data-help="summarize">?</span>
       </div>
       <button id="btnCompose" class="compose-btn">Compose</button>
+      <button id="btnCalendar" class="compose-btn" style="display:none;background:linear-gradient(135deg,#b45309,#f59e0b);margin-top:-4px">&#128197; Calendar</button>
       <div id="lowTouchToggle" style="padding:6px 10px;margin-bottom:8px;background:var(--bg2);border-radius:8px;cursor:pointer;display:flex;align-items:center;gap:8px">
         <div id="lowTouchDot" style="width:8px;height:8px;border-radius:50%;background:#55555e"></div>
         <div style="flex:1">
@@ -56,11 +57,32 @@
       </div>
     </nav>
     <main id="content">
+      <div id="gcalBanner" style="display:none;background:#7f1d1d;padding:8px 16px;align-items:center;gap:8px;border-bottom:1px solid #f8717133">
+        <span style="font-size:13px">&#128197;</span>
+        <span id="gcalBannerText" style="flex:1;font-size:12px;color:#fecaca">Google Calendar connection has expired — calendar features are offline.</span>
+        <button id="gcalReconnect" style="padding:4px 12px;background:#1a3a0a;border:1px solid #22c55e;color:#86efac;border-radius:4px;cursor:pointer;font-size:11px">Reconnect</button>
+        <button id="gcalBannerDismiss" style="padding:4px 8px;background:none;border:1px solid #7f1d1d;color:#fca5a5;border-radius:4px;cursor:pointer;font-size:11px">Dismiss</button>
+      </div>
       <div id="pendingBanner" style="display:none;background:#92400e;padding:8px 16px;display:none;align-items:center;gap:8px;cursor:pointer;border-bottom:1px solid #f59e0b33">
         <span style="font-size:13px">&#128197;</span>
         <span id="pendingText" style="flex:1;font-size:12px;color:#fef3c7"></span>
         <button id="pendingAction" style="padding:4px 12px;background:#1a3a0a;border:1px solid #22c55e;color:#86efac;border-radius:4px;cursor:pointer;font-size:11px">Add to Calendar</button>
         <button id="pendingDismiss" style="padding:4px 8px;background:none;border:1px solid #92400e;color:#fbbf24;border-radius:4px;cursor:pointer;font-size:11px">Dismiss</button>
+      </div>
+      <div id="calendarPane" style="display:none">
+        <div class="cal-toolbar">
+          <button id="calPrev" class="cal-nav-btn" title="Previous month">&#8249;</button>
+          <div id="calTitle" class="cal-title"></div>
+          <button id="calNext" class="cal-nav-btn" title="Next month">&#8250;</button>
+          <button id="calToday" class="cal-nav-btn" style="width:auto;padding:0 12px;font-size:11px">Today</button>
+          <div style="flex:1"></div>
+          <span class="cal-legend"><span class="cal-legend-dot" style="background:#fbbf24"></span>GideonMail events</span>
+          <button id="calClose" class="cal-nav-btn" title="Back to mail">&#10005;</button>
+        </div>
+        <div class="cal-weekdays">
+          <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
+        </div>
+        <div id="calGrid" class="cal-grid"></div>
       </div>
       <div id="listPane">
         <div class="list-toolbar" style="display:flex;gap:6px;align-items:center">
@@ -305,19 +327,9 @@
             <div style="font-size:10px;color:var(--fg2);margin:2px 0 0 22px">Checks URLs against Google's malware and phishing database. Massive database, very current. Free: 10k lookups/day.</div>
           </label>
           <label style="display:block;padding:6px 0;font-size:12px;color:var(--fg)">
-            <input type="checkbox" id="sfPhishtank" />
-            <strong>PhishTank</strong> <span style="color:#22c55e;font-size:10px">FREE</span>
-            <div style="font-size:10px;color:var(--fg2);margin:2px 0 0 22px">Checks URLs against community-reported phishing sites. Good supplementary phishing detection.</div>
-          </label>
-          <label style="display:block;padding:6px 0;font-size:12px;color:var(--fg)">
             <input type="checkbox" id="sfAbuseipdb" />
             <strong>AbuseIPDB</strong> <span style="color:#22c55e;font-size:10px">FREE (1000/day)</span>
             <div style="font-size:10px;color:var(--fg2);margin:2px 0 0 22px">Sender IP reputation scoring. Catches emails from compromised servers and known abuse sources.</div>
-          </label>
-          <label style="display:block;padding:6px 0;font-size:12px;color:var(--fg)">
-            <input type="checkbox" id="sfClamav" />
-            <strong>ClamAV</strong> <span style="color:#22c55e;font-size:10px">FREE (local)</span>
-            <div style="font-size:10px;color:var(--fg2);margin:2px 0 0 22px">Local antivirus scan of attachments. No API limits, fully offline. Requires ClamAV installed on your system.</div>
           </label>
           <label style="display:block;padding:6px 0;font-size:12px;color:var(--fg)">
             <input type="checkbox" id="sfBayesian" />
