@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 — 2026-07-04
+
+- Calendar candidate labels click through to the source email
+- Add-option candidates are 3-row detail cards (title/buttons, sender, subject or location)
+- Clicking any calendar event opens a detail dialog (time, location, attendees, description, Google Calendar link)
+
 ## 0.4.0 — 2026-07-04
 
 ### Calendar view
