@@ -3414,8 +3414,9 @@ async function renderCalendar() {
       chip.dataset.evId = ev.id;
       const time = ev.allDay ? "" : new Date(ev.start).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + " ";
       chip.textContent = time + ev.title;
-      chip.title = ev.title + (time ? `\n${time.trim()}` : "\nAll day") +
-        (ev.location ? `\n${ev.location}` : "") + (ev.gideon ? "\nCreated by GideonMail" : "");
+      chip.title = "Click for details";
+      chip.style.cursor = "pointer";
+      chip.onclick = () => showCalEventModal(ev);
       cell.appendChild(chip);
     }
     if (dayEvents.length > MAX_CHIPS) {
@@ -3465,11 +3466,46 @@ function _calTitleMatch(a, b) {
   return overlap / Math.min(wa.size, wb.length) >= 0.5;
 }
 
+// Event detail dialog — overlays the calendar
+function showCalEventModal(ev) {
+  $("#calEvTitle").textContent = ev.title;
+  $("#calEvBadge").style.display = ev.gideon ? "inline-block" : "none";
+
+  const day = new Date(ev.start).toLocaleDateString([], { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const fmtT = (s) => new Date(s).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  $("#calEvWhen").textContent = ev.allDay ? `${day} — all day` : `${day}, ${fmtT(ev.start)} – ${fmtT(ev.end)}`;
+
+  const loc = $("#calEvLocation");
+  loc.style.display = ev.location ? "block" : "none";
+  loc.textContent = ev.location ? "📍 " + ev.location : "";
+
+  const people = $("#calEvPeople");
+  const who = [ev.organizer ? `Organizer: ${ev.organizer}` : "", ev.attendees?.length ? `Attendees: ${ev.attendees.join(", ")}` : ""].filter(Boolean).join("\n");
+  people.style.display = who ? "block" : "none";
+  people.textContent = who;
+
+  const desc = $("#calEvDesc");
+  const descText = (ev.description || "").replace(/<[^>]+>/g, " ").replace(/\s{3,}/g, "\n").trim();
+  desc.style.display = descText ? "block" : "none";
+  desc.textContent = descText;
+
+  const link = $("#calEvLink");
+  link.style.display = ev.link ? "inline-block" : "none";
+  link.href = ev.link || "#";
+
+  $("#calEventModal").style.display = "flex";
+}
+
+$("#calEvClose").addEventListener("click", () => { $("#calEventModal").style.display = "none"; });
+$("#calEvCloseBtn").addEventListener("click", () => { $("#calEventModal").style.display = "none"; });
+$("#calEventModal").addEventListener("click", (e) => { if (e.target === $("#calEventModal")) $("#calEventModal").style.display = "none"; });
+
 // Restyle an existing event chip as canceled-per-email, with a one-click fix button
 function _calMarkCanceled(chipEl, ev, cand) {
   const text = chipEl.textContent;
   chipEl.classList.add("cancel-flagged");
   chipEl.textContent = "";
+  chipEl.onclick = null; // buttons/label take over — don't also open the detail modal
 
   const label = document.createElement("span");
   label.className = "cal-cand-label clickable";

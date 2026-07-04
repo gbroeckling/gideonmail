@@ -5035,6 +5035,10 @@ ipcMain.handle("gcal-get-events", async (_, timeMin, timeMax) => {
       end: ev.end?.dateTime || ev.end?.date || "",
       allDay: !ev.start?.dateTime,
       location: ev.location || "",
+      description: (ev.description || "").slice(0, 2000),
+      link: ev.htmlLink || "",
+      attendees: (ev.attendees || []).map((a) => a.email).filter(Boolean),
+      organizer: ev.organizer?.email || "",
       gideon: ev.extendedProperties?.private?.gideonmail === "1" || /gideonmail/i.test(ev.description || ""),
     }));
     return { events };
