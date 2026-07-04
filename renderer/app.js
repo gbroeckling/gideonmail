@@ -3472,9 +3472,10 @@ function _calMarkCanceled(chipEl, ev, cand) {
   chipEl.textContent = "";
 
   const label = document.createElement("span");
-  label.className = "cal-cand-label";
+  label.className = "cal-cand-label clickable";
   label.textContent = "✖ " + text;
-  label.title = `An email says this event was canceled:\n"${cand.subject}"\nFrom: ${cand.from}\n\nClick ✖ to remove it from Google Calendar.`;
+  label.title = `An email says this event was canceled:\n"${cand.subject}"\nFrom: ${cand.from}\n\nClick to open the email. ✖ removes the event from Google Calendar.`;
+  label.onclick = () => { showCalendar(false); openMessage(cand.uid); };
   chipEl.appendChild(label);
 
   const btnFix = document.createElement("button");
@@ -3511,9 +3512,10 @@ function _calCancelNoticeChip(cand) {
   chip.className = "cal-event cancel-notice";
 
   const label = document.createElement("span");
-  label.className = "cal-cand-label";
+  label.className = "cal-cand-label clickable";
   label.textContent = "✖ canceled: " + cand.title;
-  label.title = `An email says this event was canceled, but no matching event was found on this day.\n"${cand.subject}"\nFrom: ${cand.from}`;
+  label.title = `An email says this event was canceled, but no matching event was found on this day.\n"${cand.subject}"\nFrom: ${cand.from}\n\nClick to open the email`;
+  label.onclick = () => { showCalendar(false); openMessage(cand.uid); };
   chip.appendChild(label);
 
   const btnX = document.createElement("button");
@@ -3533,12 +3535,16 @@ function _calCandidateChip(cand) {
   const chip = document.createElement("div");
   chip.className = "cal-event candidate";
 
+  // Row 1: time + title, with Add / Dismiss buttons
+  const top = document.createElement("div");
+  top.className = "cal-cand-top";
+
   const label = document.createElement("span");
-  label.className = "cal-cand-label";
+  label.className = "cal-cand-label clickable";
   label.textContent = "✉ " + (cand.startTime ? cand.startTime + " " : "") + cand.title;
-  label.title = `Possible event found in email — not on your calendar yet\n"${cand.subject}"\nFrom: ${cand.from}` +
-    (cand.location ? `\nLocation: ${cand.location}` : "");
-  chip.appendChild(label);
+  label.title = "Possible event found in email — not on your calendar yet.\nClick to open the email.";
+  label.onclick = () => { showCalendar(false); openMessage(cand.uid); };
+  top.appendChild(label);
 
   const btnAdd = document.createElement("button");
   btnAdd.className = "cal-cand-btn";
@@ -3562,7 +3568,7 @@ function _calCandidateChip(cand) {
       label.textContent = "⚠ " + (r.error || "add failed");
     }
   };
-  chip.appendChild(btnAdd);
+  top.appendChild(btnAdd);
 
   const btnX = document.createElement("button");
   btnX.className = "cal-cand-btn dismiss";
@@ -3572,7 +3578,22 @@ function _calCandidateChip(cand) {
     await gideon.calendarCandidateResolve(cand.uid, cand.date);
     chip.remove();
   };
-  chip.appendChild(btnX);
+  top.appendChild(btnX);
+  chip.appendChild(top);
+
+  // Row 2: sender
+  const fromLine = document.createElement("div");
+  fromLine.className = "cal-cand-meta";
+  fromLine.textContent = "From: " + (cand.from || "unknown");
+  fromLine.title = cand.from || "";
+  chip.appendChild(fromLine);
+
+  // Row 3: original subject (falls back to location/time detail)
+  const detailLine = document.createElement("div");
+  detailLine.className = "cal-cand-meta";
+  detailLine.textContent = cand.location ? "📍 " + cand.location : "“" + (cand.subject || "") + "”";
+  detailLine.title = `"${cand.subject}"` + (cand.location ? `\nLocation: ${cand.location}` : "");
+  chip.appendChild(detailLine);
 
   return chip;
 }

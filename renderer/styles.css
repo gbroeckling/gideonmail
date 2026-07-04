@@ -724,7 +724,7 @@ body {
   flex: 1;
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  grid-auto-rows: 1fr;
+  grid-auto-rows: minmax(80px, auto);
   overflow-y: auto;
 }
 
@@ -783,9 +783,26 @@ body {
   border: 1px dashed #fbbf2488;
   color: #fbbf24;
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  cursor: default;
+  white-space: normal;
+  padding: 3px 5px;
+}
+.cal-cand-top {
+  display: flex;
   align-items: center;
   gap: 2px;
-  cursor: default;
+  font-weight: 600;
+}
+.cal-cand-meta {
+  font-size: 9px;
+  color: #d4a017;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .cal-cand-label {
   flex: 1;
@@ -793,6 +810,8 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.cal-cand-label.clickable { cursor: pointer; }
+.cal-cand-label.clickable:hover { text-decoration: underline; }
 .cal-cand-btn {
   background: none;
   border: none;
