@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1 — 2026-07-04
+
+### Spam pipeline fixes
+- Security scan score ≥ 5 now deletes the email (was: counted but left in inbox)
+- Blacklist 7-day cleanup runs every check cycle (was: starved by no-new-mail early returns)
+- Persistent log file at `%APPDATA%/gideonmail/gideonmail.log` (2MB rotation) — errors, auto-actions, and skipped scans are no longer console-only
+- Bayesian filter now trains automatically: spam from auto-deletions, ham from confident AI classifications
+
+### April feature work (previously uncommitted)
+- Low Touch autopilot: AI categorization and auto-actioning of unknown-sender mail with safeguards
+- Daily digests, morning briefings, commitment tracking, sender reputation, action emails
+
 ## 0.2.0 — 2026-03-25
 
 ### AI Assistant

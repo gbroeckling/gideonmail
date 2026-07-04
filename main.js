@@ -5,6 +5,7 @@ if (process.platform === "win32") app.setAppUserModelId("GideonMail");
 // Prevent crash on IMAP connection resets
 process.on("uncaughtException", (err) => {
   console.error("Uncaught exception:", err.message);
+  logToFile(`ERROR uncaughtException: ${err.message}`);
   if (err.code === "ECONNRESET" || err.code === "EPIPE" || err.code === "ETIMEDOUT") {
     console.log("Network error — will reconnect on next operation");
     imapClient = null;
@@ -12,6 +13,7 @@ process.on("uncaughtException", (err) => {
 });
 process.on("unhandledRejection", (err) => {
   console.error("Unhandled rejection:", err?.message || err);
+  logToFile(`ERROR unhandledRejection: ${err?.message || err}`);
 });
 
 // Single instance lock — prevent multiple tray icons
@@ -63,6 +65,22 @@ function backupConfig() {
 }
 backupConfig();
 
+// Persistent log file (userData/gideonmail.log, rotated at 2MB) — console.log is
+// invisible when running from the tray, so errors and auto-actions land here too
+function logToFile(msg) {
+  try {
+    const fs = require("fs");
+    const file = path.join(app.getPath("userData"), "gideonmail.log");
+    try {
+      if (fs.statSync(file).size > 2 * 1024 * 1024) {
+        try { fs.unlinkSync(file + ".old"); } catch (e) {}
+        fs.renameSync(file, file + ".old");
+      }
+    } catch (e) {}
+    fs.appendFileSync(file, `${new Date().toISOString()} ${msg}\n`);
+  } catch (e) { /* never let logging crash the app */ }
+}
+
 let mainWindow = null;
 let tray = null;
 let imapClient = null;
@@ -88,6 +106,41 @@ function createWindow() {
   });
 
   mainWindow.loadFile("renderer/index.html");
+
+  // Spell check context menu — Electron requires manual menu for suggestions
+  mainWindow.webContents.on("context-menu", (event, params) => {
+    const menu = Menu.buildFromTemplate([]);
+
+    // Spell check suggestions
+    if (params.misspelledWord) {
+      for (const suggestion of params.dictionarySuggestions.slice(0, 5)) {
+        menu.append(new (require("electron").MenuItem)({
+          label: suggestion,
+          click: () => mainWindow.webContents.replaceMisspelling(suggestion),
+        }));
+      }
+      if (params.dictionarySuggestions.length > 0) {
+        menu.append(new (require("electron").MenuItem)({ type: "separator" }));
+      }
+      menu.append(new (require("electron").MenuItem)({
+        label: "Add to Dictionary",
+        click: () => mainWindow.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord),
+      }));
+      menu.append(new (require("electron").MenuItem)({ type: "separator" }));
+    }
+
+    // Standard edit actions
+    if (params.isEditable) {
+      menu.append(new (require("electron").MenuItem)({ role: "cut" }));
+      menu.append(new (require("electron").MenuItem)({ role: "copy" }));
+      menu.append(new (require("electron").MenuItem)({ role: "paste" }));
+      menu.append(new (require("electron").MenuItem)({ role: "selectAll" }));
+    } else if (params.selectionText) {
+      menu.append(new (require("electron").MenuItem)({ role: "copy" }));
+    }
+
+    if (menu.items.length > 0) menu.popup();
+  });
 
   // Open links in the system browser instead of inside Electron
   const { shell } = require("electron");
@@ -594,32 +647,49 @@ async function fetchFolder(folderPath, page = 0, perPage = 50) {
 }
 
 // ── Search ──────────────────────────────────────────────────────────────────
+let _searchGeneration = 0;
+
 async function searchMessages(query) {
+  const gen = ++_searchGeneration;
   const client = await createFreshImapClient();
   try {
   const lock = await client.getMailboxLock("INBOX");
 
   try {
-    // Search subject first, then from (simple queries work on all servers)
-    let uids = await client.search({ subject: query }, { uid: true });
-    if (!uids.length) {
-      uids = await client.search({ from: query }, { uid: true });
+    const words = query.trim().split(/\s+/);
+
+    // Search a single word across subject, from, to, body — union of all fields
+    async function searchWord(word) {
+      const results = new Set();
+      for (const field of ["subject", "from", "to", "body"]) {
+        try {
+          const hits = await client.search({ [field]: word }, { uid: true });
+          hits.forEach(uid => results.add(uid));
+        } catch (e) {}
+      }
+      return results;
     }
-    if (!uids.length) {
-      try { uids = await client.search({ to: query }, { uid: true }); } catch (e) {}
+
+    // Build per-word UID sets, then intersect so ALL words must match
+    const uidSets = [];
+    for (const word of words) {
+      uidSets.push(await searchWord(word));
     }
+    const uids = uidSets.length === 1
+      ? [...uidSets[0]]
+      : [...uidSets[0]].filter(uid => uidSets.every(s => s.has(uid)));
+
+    // Abort if a newer search has started
+    if (gen !== _searchGeneration) return { messages: [], total: 0, stale: true };
 
     if (!uids.length) return { messages: [], total: 0 };
 
     const messages = [];
     for await (const msg of client.fetch({ uid: uids.slice(-100) }, {
-      envelope: true,
-      flags: true,
-      bodyStructure: true,
+      envelope: true, flags: true, bodyStructure: true,
     })) {
       messages.push({
-        uid: msg.uid,
-        seq: msg.seq,
+        uid: msg.uid, seq: msg.seq,
         date: msg.envelope.date?.toISOString(),
         subject: msg.envelope.subject || "(no subject)",
         from: msg.envelope.from?.[0] || {},
@@ -959,26 +1029,31 @@ async function sendSummaryActionEmail(summaryText, emailRecommendations) {
   const actionId = `GM-SUMMARY-${Date.now()}`;
 
   // Build per-email action rows
-  const statusLabels = { whitelist: "VIP", watch: "WATCH", daily: "DAILY", blacklist: "BLOCKED", greylist: "MUTED", unknown: "Not listed" };
-  const statusColors = { whitelist: "#3b82f6", watch: "#f59e0b", daily: "#22c55e", blacklist: "#ef4444", greylist: "#64748b", unknown: "#55555e" };
+  // Individual buttons: execute IMMEDIATELY for that one item (one tap, one email, done)
+  // Execute All: processes remaining items that weren't individually overridden
+  const statusLabels = { whitelist: "VIP", watch: "WATCH", daily: "DAILY", blacklist: "BLOCKED", greylist: "MUTED", customer: "CUSTOMER", unknown: "Not listed" };
+  const statusColors = { whitelist: "#3b82f6", watch: "#f59e0b", daily: "#22c55e", blacklist: "#ef4444", greylist: "#64748b", customer: "#10b981", unknown: "#55555e" };
+
+  const roles = ["skip", "blocked", "muted", "daily", "watch", "vip"];
+  const roleColors = { skip: "#55555e", blocked: "#ef4444", muted: "#64748b", daily: "#22c55e", watch: "#f59e0b", vip: "#3b82f6" };
+  const roleLabels = { skip: "Skip", blocked: "Block", muted: "Mute", daily: "Daily", watch: "Watch", vip: "VIP" };
 
   const emailRows = emailRecommendations.map((rec) => {
     const fromAddr = (rec.from?.address || "").toLowerCase();
     const fromName = rec.from?.name || fromAddr;
     const currentStatus = rec.currentStatus || "unknown";
     const isHighConf = rec.confidence === "high";
+    const currentAction = rec.suggestedAction || "skip";
 
-    // Action buttons: Skip (do nothing) + role options
-    const skipBtn = `<a href="mailto:${cfg.email || cfg.username}?subject=${encodeURIComponent(`[GIDEON-ACTION:${actionId}:${verifyCode}] ignore`)}&body=${encodeURIComponent("ignore")}" style="display:inline-block;padding:2px 6px;margin:1px;background:#2a2a32;color:#8b8b96;text-decoration:none;border-radius:3px;font-size:9px;font-weight:600;border:1px solid #55555e">Skip</a>`;
-
-    const actionBtns = ["blocked", "muted", "daily", "watch", "vip"].map((role) => {
-      const colors = { vip: "#3b82f6", watch: "#f59e0b", daily: "#22c55e", blocked: "#ef4444", muted: "#64748b" };
-      const labels = { vip: "VIP", watch: "Watch", daily: "Daily", blocked: "Block", muted: "Mute" };
-      const highlight = rec.suggestedAction === role && isHighConf;
-      return `<a href="mailto:${cfg.email || cfg.username}?subject=${encodeURIComponent(`[GIDEON-ACTION:${actionId}:${verifyCode}] ${role} ${fromAddr}`)}&body=${encodeURIComponent(`${role} ${fromAddr}`)}" style="display:inline-block;padding:2px 6px;margin:1px;background:${highlight ? colors[role] : "#2a2a32"};color:#fff;text-decoration:none;border-radius:3px;font-size:9px;font-weight:600;border:1px solid ${highlight ? colors[role] : "#55555e"}">${highlight ? "★ " : ""}${labels[role]}</a>`;
+    // Each button sends ONE command for this item immediately
+    const btns = roles.map((role) => {
+      const isSelected = role === currentAction;
+      const bg = isSelected ? roleColors[role] : "#2a2a32";
+      const border = isSelected ? roleColors[role] : "#44444e";
+      const star = isSelected && isHighConf ? "★ " : "";
+      const cmd = role === "skip" ? `skip ${fromAddr}` : `${role} ${fromAddr}`;
+      return `<a href="mailto:${cfg.email || cfg.username}?subject=${encodeURIComponent(`[GIDEON-ACTION:${actionId}:${verifyCode}] ${cmd}`)}&body=${encodeURIComponent(cmd)}" style="display:inline-block;padding:3px 7px;margin:1px;background:${bg};color:#fff;text-decoration:none;border-radius:3px;font-size:9px;font-weight:600;border:1px solid ${border}">${star}${roleLabels[role]}</a>`;
     }).join("");
-
-    const confLabel = isHighConf ? '<span style="color:#4ade80;font-size:9px"> (high confidence)</span>' : '<span style="color:#f59e0b;font-size:9px"> (suggestion)</span>';
 
     return `
       <div style="padding:8px 0;border-bottom:1px solid #2a2a32">
@@ -989,18 +1064,15 @@ async function sendSummaryActionEmail(summaryText, emailRecommendations) {
           </div>
           <span style="padding:2px 6px;border-radius:3px;font-size:8px;font-weight:700;color:#fff;background:${statusColors[currentStatus]};white-space:nowrap;margin-left:4px">${statusLabels[currentStatus]}</span>
         </div>
-        <div style="font-size:10px;color:#a78bfa;margin:4px 0">${rec.recommendation || ""}${confLabel}</div>
-        <div>${skipBtn} ${actionBtns}</div>
+        <div style="font-size:10px;color:#a78bfa;margin:4px 0">${rec.recommendation || ""} <span style="color:${isHighConf ? "#4ade80" : "#f59e0b"};font-size:9px">(${isHighConf ? "★ high confidence" : "suggestion"})</span></div>
+        <div>${btns}</div>
       </div>`;
   }).join("");
 
-  // Build "Execute All" — ONLY high-confidence recommendations
-  const highConfRecs = emailRecommendations.filter((r) => r.confidence === "high" && r.suggestedAction && r.from?.address);
-  const batchCommands = highConfRecs
-    .map((r) => `${r.suggestedAction} ${r.from.address.toLowerCase()}`)
-    .join("\n");
-
-  const executeAllBtn = batchCommands ? `<a href="mailto:${cfg.email || cfg.username}?subject=${encodeURIComponent(`[GIDEON-ACTION:${actionId}:${verifyCode}] BATCH`)}&body=${encodeURIComponent(batchCommands)}" style="display:block;padding:10px 20px;margin:12px auto;background:linear-gradient(135deg,#7c6cff,#6355e0);color:#fff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px;text-align:center;max-width:300px">Execute ${highConfRecs.length} High-Confidence Actions</a>` : "";
+  // Execute Remaining: tells the backend to apply all un-overridden defaults
+  // Backend looks up the stored recommendations and skips individually acted-on addresses
+  const executeCount = emailRecommendations.filter((r) => (r.suggestedAction || "skip") !== "skip").length;
+  const executeBtn = executeCount > 0 ? `<a href="mailto:${cfg.email || cfg.username}?subject=${encodeURIComponent(`[GIDEON-ACTION:${actionId}:${verifyCode}] EXECUTE-REMAINING`)}&body=${encodeURIComponent("execute-remaining")}" style="display:block;padding:10px 20px;margin:12px auto;background:linear-gradient(135deg,#7c6cff,#6355e0);color:#fff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px;text-align:center;max-width:350px">Execute Remaining (${executeCount})</a>` : "";
 
   const html = `
 <!DOCTYPE html>
@@ -1015,14 +1087,14 @@ async function sendSummaryActionEmail(summaryText, emailRecommendations) {
       <div style="color:#e4e4e8;font-size:12px;line-height:1.6;padding:12px;background:#111113;border-radius:8px;margin-bottom:16px;white-space:pre-wrap">${(summaryText || "").replace(/\n/g, "<br>")}</div>
 
       ${emailRecommendations.length > 0 ? `
-      <div style="font-size:10px;color:#55555e;font-weight:700;margin-bottom:8px">AI RECOMMENDATIONS — ★ = high confidence. Tap per sender or use Execute All for starred only.</div>
+      <div style="font-size:10px;color:#55555e;font-weight:700;margin-bottom:8px">AI RECOMMENDATIONS — override any item by tapping a different button. Then "Execute Remaining" handles the rest.</div>
       ${emailRows}
-      ${executeAllBtn}
+      ${executeBtn}
       ` : ""}
 
       <div style="color:#55555e;font-size:9px;text-align:center;margin-top:12px;padding-top:10px;border-top:1px solid #2a2a32">
-        Each button sends one action. "Execute All" sends all starred recommendations at once.<br>
-        Commands: vip · watch · daily · blocked · muted — followed by email address
+        ★ = AI recommendation. Tap a different button to override (sends immediately).<br>
+        Then tap "Execute Remaining" to apply defaults for items you didn't change.
       </div>
     </div>
   </div>
@@ -1046,7 +1118,11 @@ async function sendSummaryActionEmail(summaryText, emailRecommendations) {
 
     // Track for auto-delete
     const sent = store.get("action_emails_sent") || [];
-    sent.push({ actionId, verifyCode, uid: null, from: null, subject: "Inbox Summary", sent: new Date().toISOString() });
+    // Store original recommendations so EXECUTE-REMAINING can look them up
+    const recsForStorage = emailRecommendations
+      .filter((r) => (r.suggestedAction || "skip") !== "skip" && r.from?.address)
+      .map((r) => ({ addr: r.from.address.toLowerCase(), action: r.suggestedAction }));
+    sent.push({ actionId, verifyCode, uid: null, from: null, subject: "Inbox Summary", sent: new Date().toISOString(), recommendations: recsForStorage });
     if (sent.length > 50) sent.splice(0, sent.length - 50);
     store.set("action_emails_sent", sent);
     console.log("Summary action email sent");
@@ -1100,12 +1176,16 @@ async function processActionReplies() {
             if (msg.source) {
               const parsed = await simpleParser(msg.source);
               const bodyText = (parsed.text || "").trim();
-              // Split body into lines, filter to valid commands
-              const lines = bodyText.split("\n").map((l) => l.trim().toLowerCase()).filter(Boolean);
+              // Split body into lines, strip comments, filter to valid commands
+              const lines = bodyText.split("\n")
+                .map((l) => l.replace(/#.*$/, "").trim().toLowerCase()) // strip # comments
+                .filter((l) => l && !l.startsWith("---") && !l.startsWith("change") && !l.startsWith("delete") && !l.startsWith("then")); // skip instruction lines
               for (const line of lines) {
+                // Skip "skip" commands — they mean "do nothing"
+                if (line.startsWith("skip ") || line === "skip") continue;
                 if (line.startsWith("reply:") || line.startsWith("reply ") ||
-                    ["approve", "decline", "later", "ignore", "delete", "vip", "watch", "blocked", "muted", "daily"].includes(line.split(/\s/)[0]) ||
-                    line.match(/^(block|mute|watch|vip|daily|delete)\s+\S+@\S+/)) {
+                    ["approve", "decline", "later", "ignore", "delete", "vip", "watch", "customer", "blocked", "muted", "daily"].includes(line.split(/\s/)[0]) ||
+                    line.match(/^(block|mute|watch|vip|daily|customer|delete)\s+\S+@\S+/)) {
                   commands.push(line);
                 }
               }
@@ -1114,11 +1194,57 @@ async function processActionReplies() {
             if (command && !commands.length) commands = [command];
             if (!commands.length && command) commands = [command];
 
+            // Track addresses already individually acted on (for batch dedup)
+            const actedOnKey = `acted_on_${code}`;
+            const actedOn = new Set(store.get(actedOnKey) || []);
+            const isBatch = commands.length > 1;
+
             for (const cmd of commands) {
               const command = cmd;
+
+              // Batch dedup: if this address was already individually overridden, skip it
+              if (isBatch) {
+                const batchAddrMatch = command.match(/\S+\s+(\S+@\S+)/);
+                if (batchAddrMatch && actedOn.has(batchAddrMatch[1])) {
+                  console.log(`Action batch: skipping ${batchAddrMatch[1]} (already individually overridden)`);
+                  continue;
+                }
+              }
+
               console.log(`Action reply (code verified): ${command}`);
 
-              if (command.startsWith("reply:") || command.startsWith("reply ")) {
+              if (command === "execute-remaining") {
+                // Look up original recommendations and apply un-overridden ones
+                const actedOnAddrs = new Set(store.get(actedOnKey) || []);
+                const origRecs = originalAction?.recommendations || [];
+                for (const rec of origRecs) {
+                  if (actedOnAddrs.has(rec.addr)) {
+                    console.log(`Execute remaining: skipping ${rec.addr} (individually overridden)`);
+                    continue;
+                  }
+                  if (rec.action === "skip") continue;
+                  // Apply the recommendation
+                  const targetAddr = rec.addr;
+                  const role = rec.action;
+                  // Remove from all lists first
+                  for (const key of ["sms_whitelist", "ai_watchlist", "sms_blacklist", "sms_greylist", "daily_update_list", "customer_list"]) {
+                    let list = store.get(key) || [];
+                    list = list.filter((i) => i.address !== targetAddr);
+                    store.set(key, list);
+                  }
+                  const roleKeys2 = { customer: "customer_list", vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
+                  if (roleKeys2[role]) {
+                    const list = store.get(roleKeys2[role]) || [];
+                    const entry = { id: Date.now().toString(), address: targetAddr, name: "", enabled: true, created: new Date().toISOString() };
+                    if (role === "watch") entry.actions = { aiAnalyze: true, smsAlert: true, autoCalendar: false, flagImportant: true };
+                    list.push(entry);
+                    store.set(roleKeys2[role], list);
+                    console.log(`Execute remaining: applied ${role} to ${targetAddr}`);
+                  }
+                }
+                // Clean up
+                store.delete(actedOnKey);
+              } else if (command.startsWith("reply:") || command.startsWith("reply ")) {
                 const replyText = command.replace(/^reply[:\s]+/, "").trim();
                 if (replyText) {
                   await sendMail({
@@ -1144,7 +1270,21 @@ async function processActionReplies() {
                   try { await deleteMessage(originalAction.uid); } catch (e) {}
                   console.log(`Action: deleted UID ${originalAction.uid}`);
                 }
-              } else if (command === "vip" || command === "watch" || command === "blocked" || command === "muted" || command === "daily") {
+              } else if (command.startsWith("resolve-item ")) {
+                // Mark a customer item as resolved
+                const parts = command.split(/\s+/);
+                const resAddr = parts[1];
+                const resItemId = parts[2];
+                if (resAddr && resItemId) {
+                  const items = store.get("customer_items") || {};
+                  const custData = items[resAddr];
+                  if (custData) {
+                    const item = custData.items?.find((i) => i.id === resItemId);
+                    if (item) { item.status = "resolved"; store.set("customer_items", items); }
+                    console.log(`Action: resolved customer item ${resItemId} for ${resAddr}`);
+                  }
+                }
+              } else if (command === "customer" || command === "vip" || command === "watch" || command === "blocked" || command === "muted" || command === "daily") {
                 // Sender management from action email (uses original sender)
                 const senderAddr = originalAction.from?.address;
                 const senderName = originalAction.from?.name || "";
@@ -1156,7 +1296,7 @@ async function processActionReplies() {
                     store.set(key, list);
                   }
                   // Add to new role
-                  const roleKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
+                  const roleKeys = { customer: "customer_list", vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
                   const list = store.get(roleKeys[command]) || [];
                   const entry = { id: Date.now().toString(), address: senderAddr.toLowerCase(), name: senderName, enabled: true, created: new Date().toISOString() };
                   if (command === "watch") entry.actions = { aiAnalyze: true, smsAlert: true, autoCalendar: false, flagImportant: true };
@@ -1183,7 +1323,7 @@ async function processActionReplies() {
                     list = list.filter((i) => i.address !== targetAddr);
                     store.set(key, list);
                   }
-                  const roleKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
+                  const roleKeys = { customer: "customer_list", vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
                   if (roleKeys[role]) {
                     const list = store.get(roleKeys[role]) || [];
                     const entry = { id: Date.now().toString(), address: targetAddr, name: "", enabled: true, created: new Date().toISOString() };
@@ -1194,13 +1334,25 @@ async function processActionReplies() {
                   }
                 }
               }
+              // Track this address as individually acted on (for batch dedup)
+              if (!isBatch) {
+                const addrMatch = command.match(/\S+\s+(\S+@\S+)/);
+                if (addrMatch) {
+                  actedOn.add(addrMatch[1]);
+                  store.set(actedOnKey, [...actedOn]);
+                }
+              }
             } // end for (const cmd of commands)
 
-            // Commands processed — remove from tracking
-            if (commands.length > 0) {
+            // For individual overrides: keep the action email alive (Execute Remaining still needs the code)
+            // For batches or execute-remaining: remove from tracking (all done)
+            const isFinished = isBatch || commands.includes("execute-remaining");
+            if (isFinished && commands.length > 0) {
               const idx = sentActions.findIndex((a) => a.verifyCode === code);
               if (idx >= 0) sentActions.splice(idx, 1);
               store.set("action_emails_sent", sentActions);
+              // Clean up the acted-on tracker
+              store.delete(actedOnKey);
             }
           }
 
@@ -1717,6 +1869,7 @@ function _logAutoAction(action, from, to, details) {
   if (log.length > 200) log.splice(0, log.length - 200);
   store.set("auto_action_log", log);
   console.log(`AUTO-ACTION [${action}]: from=${from} to=${to} — ${details}`);
+  logToFile(`AUTO-ACTION [${action}]: from=${from} to=${to} — ${details}`);
 }
 
 // Master safeguard gate: returns { safe: true } or { safe: false, reason: "..." }
@@ -1817,6 +1970,9 @@ async function lowTouchProcess(messages) {
       if (scanResult.score >= 5) {
         console.log(`Low Touch BLOCKED (spam score ${scanResult.score}): ${msg.from?.address} "${msg.subject}"`);
         _incrementStat("spam_blocked");
+        try { await deleteMessage(msg.uid); } catch (e) {}
+        _logAutoAction("security-spam-delete", msg.from?.address, "deleted", `Spam score ${scanResult.score} [${(scanResult.flags || []).join(",")}]: "${msg.subject}"`);
+        _trackAutoHandledAction(msg.uid, "deleted_spam", `Spam score ${scanResult.score} — deleted by security filters`);
         processed.add(msg.uid);
         continue;
       }
@@ -1827,6 +1983,7 @@ async function lowTouchProcess(messages) {
       spamFiltered.push(msg);
     } catch (e) {
       // If we can't fetch headers, still allow but flag as unchecked
+      logToFile(`WARN spam scan skipped (${e.message}) — passing through unchecked: ${msg.from?.address} "${msg.subject}"`);
       msg._headers = null;
       msg._spamScore = 0;
       spamFiltered.push(msg);
@@ -1884,6 +2041,7 @@ async function lowTouchProcess(messages) {
     if (heuristicSpam) {
       console.log(`Low Touch HEURISTIC SPAM (${heuristicReason}): ${fromAddr} "${msg.subject}"`);
       try { await deleteMessage(msg.uid); } catch (e) {}
+      bayesianFilter.train(`${msg.text || ""} ${msg.subject || ""}`, true);
       _logAutoAction("heuristic-spam-delete", fromAddr, "deleted", `Heuristic: ${heuristicReason}: "${msg.subject}"`);
       processed.add(msg.uid);
       // Track the action taken for the digest
@@ -2013,15 +2171,22 @@ Categories:
         console.log(`Low Touch BLOCKED (AI scam risk): ${msg.from?.address} "${msg.subject}"`);
         _incrementStat("scam_blocked");
         try { await deleteMessage(msg.uid); } catch (e) {}
+        bayesianFilter.train(`${msg.text || ""} ${msg.subject || ""}`, true);
         _logAutoAction("scam-delete", msg.from?.address, "deleted", `AI flagged scamRisk: "${msg.subject}"`);
         _trackAutoHandledAction(msg.uid, "deleted_scam", "Deleted: AI detected scam risk");
         processed.add(msg.uid);
         continue;
       }
 
+      // Train Bayesian ham from confident non-spam verdicts (spam trained at delete sites)
+      if (confidence >= 0.7 && ["personal", "receipt", "action", "meeting"].includes(category)) {
+        bayesianFilter.train(`${msg.text || ""} ${msg.subject || ""}`, false);
+      }
+
       // ── Safeguard #13: Low confidence = file silently, don't act ────
       if (confidence < 0.6 && (category === "action" || category === "personal" || category === "meeting")) {
         console.log(`Low Touch: low confidence (${confidence}) for "${msg.subject}" — filing as notification instead of acting`);
+        _trackAutoHandledAction(msg.uid, "low_confidence", `Low confidence (${confidence}) — filed as notification instead of acting`);
         // Downgrade to notification (safe — just marks as read)
         try {
           const notifClient = await createFreshImapClient();
@@ -2044,6 +2209,7 @@ Categories:
         if (!guard.safe) {
           console.log(`Low Touch BLOCKED (${guard.reason}): ${msg.from?.address} "${msg.subject}"`);
           _logAutoAction("safeguard-block", msg.from?.address, "blocked", guard.reason);
+          _trackAutoHandledAction(msg.uid, "safeguard_blocked", `Blocked: ${guard.reason}`);
           // Still mark as processed so we don't re-check every cycle
           processed.add(msg.uid);
           continue;
@@ -2052,6 +2218,7 @@ Categories:
         // ── Safeguard #6: First-contact quarantine — never auto-act on first email ────
         if (_isFirstContact(msg.from?.address) && (category === "action" || category === "personal")) {
           console.log(`Low Touch: first contact from ${msg.from?.address} — skipping auto-action, filing as notification`);
+          _trackAutoHandledAction(msg.uid, "first_contact", `First contact from ${msg.from?.address} — no auto-action, marked as read`);
           try {
             const qClient = await createFreshImapClient();
             try {
@@ -2078,6 +2245,7 @@ Categories:
       if (category === "spam") {
         // Delete spam
         try { await deleteMessage(msg.uid); } catch (e) {}
+        bayesianFilter.train(`${msg.text || ""} ${msg.subject || ""}`, true);
         _trackAutoHandledAction(msg.uid, "deleted_spam", "AI classified as spam");
         console.log(`Low Touch: deleted spam from ${msg.from?.address}`);
         _incrementStat("spam_deleted");
@@ -2102,8 +2270,37 @@ Categories:
             } finally { lock.release(); }
           } finally { try { await archiveClient.logout(); } catch (e) {} }
         } catch (e) {}
-        _trackAutoHandledAction(msg.uid, "filed_newsletter", "Moved to Newsletters");
-        console.log(`Low Touch: moved newsletter to folder from ${msg.from?.address}`);
+        // Extract main content link from newsletter via AI
+        let mainLink = "";
+        try {
+          const nlMsg = await fetchMessage(msg.uid);
+          const nlHtml = nlMsg.html || "";
+          const nlText = nlMsg.text || nlHtml.replace(/<[^>]+>/g, " ").substring(0, 3000);
+          // Extract all URLs from the HTML
+          const urlMatches = nlHtml.match(/href=["'](https?:\/\/[^"']+)["']/gi) || [];
+          const urls = urlMatches.map((m) => m.match(/href=["'](https?:\/\/[^"']+)["']/i)?.[1]).filter(Boolean);
+          // Filter out tracking/unsubscribe/social/image URLs
+          const contentUrls = urls.filter((u) => !u.match(/unsubscribe|tracking|click\.|pixel|facebook|twitter|instagram|linkedin|youtube|\.png|\.jpg|\.gif|mailchimp|sendgrid|list-manage/i));
+          if (contentUrls.length > 0 && store.get("anthropic_api_key")) {
+            try {
+              const aiClient = getAnthropicClient();
+              const resp = await aiClient.messages.create({
+                model: "claude-haiku-4-5-20251001",
+                max_tokens: 100,
+                system: `Pick the ONE most important content link from this newsletter. Return ONLY the URL, nothing else. Pick the main article, blog post, or "read more" link — not homepage, social media, unsubscribe, or navigation links. If no clear content link, return "none".`,
+                messages: [{ role: "user", content: `Subject: ${msg.subject}\n\nURLs found:\n${contentUrls.slice(0, 15).join("\n")}\n\nEmail preview:\n${nlText.substring(0, 500)}` }],
+              });
+              const picked = (resp.content[0]?.text || "").trim();
+              if (picked && picked !== "none" && picked.startsWith("http")) mainLink = picked;
+            } catch (e) {}
+          } else if (contentUrls.length > 0) {
+            // No AI — use first content URL as best guess
+            mainLink = contentUrls[0];
+          }
+        } catch (e) {}
+        const linkNote = mainLink ? ` — <a href="${mainLink}" style="color:#7c6cff">Read</a>` : "";
+        _trackAutoHandledAction(msg.uid, "filed_newsletter", `Moved to Newsletters${mainLink ? ` | ${mainLink}` : ""}`);
+        console.log(`Low Touch: moved newsletter to folder from ${msg.from?.address}${mainLink ? ` (link: ${mainLink})` : ""}`);
         _incrementStat("newsletters_filed");
 
       } else if (category === "receipt") {
@@ -2203,19 +2400,32 @@ Write a concise reply that sounds like them. Only output the reply body.${voiceI
           { label: "Ignore", command: "ignore", color: "#55555e" },
         ]);
         _logAutoAction("meeting-approval", msg.from?.address, "action-email", `Meeting from unknown sender: "${msg.subject}"`);
+        _trackAutoHandledAction(msg.uid, "meeting_approval", `Meeting from ${msg.from?.name || msg.from?.address} — sent for your approval`);
         // Action email IS the notification — no SMS needed
         _addSmsSentUid(msg.uid);
 
       } else if (category === "deadline") {
         // SMS alert with deadline
         const deadline = cat.deadline || "soon";
+        _trackAutoHandledAction(msg.uid, "deadline_alert", `Deadline alert: ${msg.subject} — due ${deadline}`);
         if (smsTo) {
           await sendAlert(`DEADLINE: ${msg.from?.name || msg.from?.address}: ${msg.subject} [DUE ${deadline}]`);
           _addSmsSentUid(msg.uid);
         }
       }
 
-      // Track as processed
+      // Track as processed — ensure every email has an action recorded
+      const existingAction = (store.get("low_touch_actions") || {})[String(msg.uid)];
+      if (!existingAction) {
+        // No specific action was recorded — log what category it was
+        const catLabel = {
+          spam: "Deleted as spam", newsletter: "Filed as newsletter", receipt: "Filed as receipt",
+          notification: "Filed as notification", action: "Sent for your approval",
+          meeting: "Meeting — sent for approval", deadline: "Deadline alert sent",
+          personal: "Personal — marked as read"
+        }[category] || `Categorized as ${category}`;
+        _trackAutoHandledAction(msg.uid, `cat_${category}`, catLabel);
+      }
       processed.add(msg.uid);
     } catch (e) { console.error("Low Touch failed for UID", msg.uid, e.message); }
   }
@@ -2395,15 +2605,11 @@ async function autoTriageNewMail(messages) {
   const _greylist = (store.get("sms_greylist") || []).filter((g) => g.enabled);
   const _blacklist = (store.get("sms_blacklist") || []).filter((b) => b.enabled);
   const _dailyUpdate = (store.get("daily_update_list") || []).filter((d) => d.enabled);
-  const _matchesList = (msg, list) => list.some((w) => {
-    const addr = (msg.from?.address || "").toLowerCase();
-    const name = (msg.from?.name || "").toLowerCase();
-    return w.address && (addr === w.address || addr.includes(w.address) || name.includes(w.address));
-  });
+  const _matchesList = (msg, list) => _matchesSenderList(msg.from?.address, msg.from?.name, list);
   const smsEligible = newMsgs.filter((m) => !_matchesList(m, _greylist) && !_matchesList(m, _blacklist) && !_matchesList(m, _dailyUpdate));
 
-  // Run blacklist cleanup (delete emails > 1 week old from blacklisted senders)
-  cleanupBlacklistedEmails().catch((e) => console.error("Blacklist cleanup:", e.message));
+  // Blacklist cleanup now runs unconditionally from the check cycles in startIdle()
+  // — previously here, where the early returns above could starve it on a quiet inbox
   processActionReplies().catch((e) => console.error("Action replies:", e.message));
 
   // ── Basic spam heuristic (always runs, no API needed) ──────────────────
@@ -2463,13 +2669,17 @@ async function autoTriageNewMail(messages) {
     }
   }
 
+  // ── Track which UIDs have been alerted to avoid duplicate notifications ──
+  const _alertedUids = new Set(_getSmsSentUids());
+
   // ── AI Watch List (smart senders: AI analyze + actions) ────────────────
   const watchlist = (store.get("ai_watchlist") || []).filter((w) => w.enabled);
   if (watchlist.length > 0 && store.get("anthropic_api_key")) {
     for (const msg of smsEligible) {
+      if (_alertedUids.has(msg.uid)) continue;
       const fromAddr = (msg.from?.address || "").toLowerCase();
       const fromName = (msg.from?.name || "").toLowerCase();
-      const match = watchlist.find((w) => w.address && (fromAddr === w.address || fromAddr.includes(w.address) || fromName.includes(w.address)));
+      const match = _findSenderInList(fromAddr, fromName, watchlist);
       if (!match) continue;
 
       try {
@@ -2482,6 +2692,7 @@ async function autoTriageNewMail(messages) {
           if (match.actions?.smsAlert && smsTo) {
             await sendAlert(`WATCH [${match.name || match.address}]: ${analysis.substring(0, 120)}`);
             _addSmsSentUid(msg.uid);
+            _alertedUids.add(msg.uid);
           }
 
           // Auto-calendar
@@ -2574,8 +2785,207 @@ async function autoTriageNewMail(messages) {
     }
   }
 
-  // ── Whitelist check (always SMS for these senders) ─────────────────────
+  // ── Customer check (highest priority — deep AI analysis + item tracking) ──
   const smsTo = store.get("sms_to");
+  const customerList = (store.get("customer_list") || []).filter((c) => c.enabled);
+  if (customerList.length > 0 && store.get("anthropic_api_key")) {
+    for (const msg of smsEligible) {
+      if (_alertedUids.has(msg.uid)) continue;
+      const custMatch = _findSenderInList(msg.from?.address, msg.from?.name, customerList);
+      if (!custMatch) continue;
+
+      try {
+        // Deep AI analysis — fetch full email body
+        const fullMsg = await fetchMessage(msg.uid);
+        const bodyText = fullMsg.text || fullMsg.html?.replace(/<[^>]+>/g, " ").substring(0, 3000) || "";
+        const custAddr = (msg.from?.address || "").toLowerCase();
+        const custName = msg.from?.name || custMatch.name || custAddr;
+
+        // Get existing customer items for context
+        const allCustItems = store.get("customer_items") || {};
+        const custData = allCustItems[custAddr] || { name: custName, items: [], stats: {} };
+        const openItems = (custData.items || []).filter((i) => i.status !== "resolved");
+        const openCtx = openItems.length > 0
+          ? `\n\nOpen items for this customer:\n${openItems.map((i) => `- ${i.title} (${i.status}) — actions: ${(i.actionItems || []).filter(a => !a.done).map(a => a.text).join(", ") || "none pending"}`).join("\n")}`
+          : "";
+
+        // AI deep analysis
+        const aiClient = getAnthropicClient();
+        const today = new Date().toISOString().split("T")[0];
+        const resp = await aiClient.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 500,
+          system: `You are a customer relationship assistant. Today is ${today}. Analyze this email from an important customer. Respond with ONLY valid JSON:
+{
+  "summary": "2-3 sentence summary of what this email is about",
+  "itemTitle": "short title for the topic/project (e.g. 'Website redesign', 'Invoice #4521', 'March meeting')",
+  "isNewItem": true/false (is this a new topic or continuation of an existing one?),
+  "existingItemId": "id of matching open item if continuation, or null",
+  "actionItems": [{"text": "specific action needed", "due": "YYYY-MM-DD or null", "owner": "us|them"}],
+  "questions": ["list of questions the customer is asking"],
+  "sentiment": "positive|neutral|negative|urgent",
+  "needsResponse": true/false,
+  "meetingRequested": true/false,
+  "meetingDetails": {"date": "YYYY-MM-DD or null", "time": "HH:MM or null", "location": "or null"}
+}
+
+Guidelines:
+- "owner": "us" means WE need to do something. "them" means they promised to do something.
+- If the email references an existing open item, set isNewItem=false and match by title similarity.
+- Extract EVERY action item, question, and deadline.
+- Be specific — "Send the proposal" not "Follow up".${getInstructionsBlock()}`,
+          messages: [{ role: "user", content: `From: ${custName} <${custAddr}>\nSubject: ${msg.subject}\nDate: ${msg.date}${openCtx}\n\n${bodyText}` }],
+        });
+
+        let analysis = {};
+        try { analysis = JSON.parse((resp.content[0]?.text || "").match(/\{[\s\S]*\}/)?.[0] || "{}"); } catch (e) {}
+
+        const summary = analysis.summary || `Email from ${custName}: ${msg.subject}`;
+        const itemTitle = analysis.itemTitle || msg.subject;
+
+        // Track the item
+        if (!custData.items) custData.items = [];
+        let targetItem;
+
+        if (!analysis.isNewItem && analysis.existingItemId) {
+          targetItem = custData.items.find((i) => i.id === analysis.existingItemId);
+        }
+        if (!targetItem && !analysis.isNewItem) {
+          // Try to match by title similarity
+          targetItem = custData.items.find((i) => i.status !== "resolved" && (i.title.toLowerCase().includes(itemTitle.toLowerCase().substring(0, 20)) || itemTitle.toLowerCase().includes(i.title.toLowerCase().substring(0, 20))));
+        }
+
+        if (!targetItem) {
+          // New item
+          targetItem = {
+            id: `item_${Date.now()}`,
+            title: itemTitle,
+            status: "open",
+            emails: [],
+            actionItems: [],
+            questions: [],
+            lastContact: new Date().toISOString(),
+            pendingResponse: analysis.needsResponse,
+            created: new Date().toISOString(),
+          };
+          custData.items.push(targetItem);
+        }
+
+        // Update item
+        targetItem.emails.push(msg.uid);
+        if (targetItem.emails.length > 50) targetItem.emails.splice(0, targetItem.emails.length - 50);
+        targetItem.lastContact = new Date().toISOString();
+        targetItem.pendingResponse = analysis.needsResponse;
+        if (analysis.sentiment === "urgent") targetItem.status = "urgent";
+
+        // Add new action items
+        for (const ai of (analysis.actionItems || [])) {
+          targetItem.actionItems.push({ text: ai.text, due: ai.due || null, owner: ai.owner || "us", done: false, added: new Date().toISOString() });
+        }
+        // Keep manageable
+        if (targetItem.actionItems.length > 20) targetItem.actionItems.splice(0, targetItem.actionItems.length - 20);
+
+        // Add questions
+        targetItem.questions = (analysis.questions || []).slice(0, 10);
+
+        // Update stats
+        custData.name = custName;
+        if (!custData.stats) custData.stats = {};
+        custData.stats.totalEmails = (custData.stats.totalEmails || 0) + 1;
+        custData.stats.lastContact = new Date().toISOString();
+
+        allCustItems[custAddr] = custData;
+        store.set("customer_items", allCustItems);
+
+        console.log(`Customer: ${custName} — "${itemTitle}" (${analysis.isNewItem ? "new" : "existing"}) — ${(analysis.actionItems || []).length} actions, sentiment=${analysis.sentiment}`);
+
+        // Build SMS
+        let smsText = `CUSTOMER ${custName}: ${msg.subject}`;
+        if (analysis.sentiment === "urgent") smsText = `⚡ URGENT CUSTOMER ${custName}: ${msg.subject}`;
+        if (analysis.actionItems?.length) smsText += `\n${analysis.actionItems.length} action item${analysis.actionItems.length > 1 ? "s" : ""}`;
+        if (analysis.meetingRequested) smsText += `\n📅 Meeting requested`;
+
+        // Build action email with full customer context
+        const cfg = store.get("account");
+        const openActionItems = targetItem.actionItems.filter((a) => !a.done);
+        const openItemsList = openItems.filter((i) => i.id !== targetItem.id).slice(0, 3);
+
+        // Calendar slots — get next 3 free slots
+        let calSlots = [];
+        if (analysis.meetingRequested && googleAuth?.isConnected) {
+          try {
+            const token = await googleAuth.getToken();
+            const calId = store.get("google_calendar_id") || "primary";
+            const params = new URLSearchParams({
+              timeMin: new Date().toISOString(),
+              timeMax: new Date(Date.now() + 5 * 86400000).toISOString(),
+              singleEvents: "true", orderBy: "startTime",
+            });
+            const https = require("https");
+            const calRes = await new Promise((resolve, reject) => {
+              const req = https.request({
+                hostname: "www.googleapis.com",
+                path: `/calendar/v3/calendars/${encodeURIComponent(calId)}/events?${params}`,
+                headers: { "Authorization": `Bearer ${token}` },
+              }, (r) => { let d = ""; r.on("data", (c) => { d += c; }); r.on("end", () => { try { resolve(JSON.parse(d)); } catch (e) { resolve({}); } }); });
+              req.on("error", reject); req.end();
+            });
+            const events = (calRes.items || []).map((e) => ({
+              start: new Date(e.start?.dateTime || e.start?.date),
+              end: new Date(e.end?.dateTime || e.end?.date),
+            }));
+            // Find 3 free 1-hour slots in business hours
+            for (let day = 0; day < 5 && calSlots.length < 3; day++) {
+              const d = new Date(Date.now() + day * 86400000);
+              if (d.getDay() === 0 || d.getDay() === 6) continue; // skip weekends
+              for (let h = 9; h < 17 && calSlots.length < 3; h++) {
+                const candidate = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, 0, 0);
+                if (candidate < new Date()) continue;
+                const candidateEnd = new Date(candidate.getTime() + 60 * 60000);
+                const conflict = events.some((e) => candidate < e.end && candidateEnd > e.start);
+                if (!conflict) {
+                  calSlots.push({
+                    label: candidate.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) + " " + candidate.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }),
+                    start: candidate.toISOString(),
+                    end: candidateEnd.toISOString(),
+                  });
+                }
+              }
+            }
+          } catch (e) {}
+        }
+
+        // Send rich action email
+        const actionEmailSummary = `${summary}\n\n` +
+          (openActionItems.length ? `ACTION ITEMS:\n${openActionItems.map((a) => `${a.owner === "us" ? "→ You" : "→ They"}: ${a.text}${a.due ? ` (due ${a.due})` : ""}`).join("\n")}\n\n` : "") +
+          (analysis.questions?.length ? `QUESTIONS ASKED:\n${analysis.questions.map((q) => `? ${q}`).join("\n")}\n\n` : "") +
+          (openItemsList.length ? `OTHER OPEN ITEMS:\n${openItemsList.map((i) => `• ${i.title} (${i.status})`).join("\n")}\n\n` : "") +
+          (calSlots.length ? `AVAILABLE TIMES:\n${calSlots.map((s) => `📅 ${s.label}`).join("\n")}` : "");
+
+        const actionBtns = [
+          { label: "Reply", command: "reply", color: "#7c6cff" },
+          ...(analysis.meetingRequested && calSlots.length ? calSlots.map((s) => ({
+            label: `📅 ${s.label}`, command: `reply: I'm available ${s.label}. Does that work for you?`, color: "#22c55e"
+          })) : []),
+          { label: "Mark Resolved", command: `resolve-item ${custAddr} ${targetItem.id}`, color: "#4ade80" },
+          { label: "Needs Follow-up", command: "later", color: "#ff9f43" },
+          { label: "Ignore", command: "ignore", color: "#55555e" },
+        ];
+
+        await sendActionEmail(msg, actionEmailSummary, actionBtns);
+
+        if (smsTo) {
+          await sendAlert(smsText);
+          _addSmsSentUid(msg.uid);
+          _alertedUids.add(msg.uid);
+        }
+
+        _incrementStat("customer_emails");
+      } catch (e) { console.error("Customer processing failed:", e.message); }
+    }
+  }
+
+  // ── Whitelist check (always SMS for these senders) ─────────────────────
   if (smsTo) {
     const whitelist = (store.get("sms_whitelist") || []).filter((w) => w.enabled);
     if (whitelist.length > 0) {
@@ -2584,7 +2994,7 @@ async function autoTriageNewMail(messages) {
         const fromAddr = (msg.from?.address || "").toLowerCase();
         const fromName = (msg.from?.name || "").toLowerCase();
         for (const w of whitelist) {
-          if (w.address && (fromAddr === w.address || fromAddr.includes(w.address) || fromName.includes(w.address))) {
+          if (_matchesSender(fromAddr, fromName, w)) {
             whitelistAlerts.push(msg);
             break;
           }
@@ -2595,6 +3005,7 @@ async function autoTriageNewMail(messages) {
         const detectMeetings = store.get("vip_detect_meetings") !== false;
 
         for (const m of whitelistAlerts) {
+          if (_alertedUids.has(m.uid)) continue;
           let smsText = `VIP: ${_formatEmailForSms(m, s.format)}`;
           let isMeeting = false;
 
@@ -2764,6 +3175,7 @@ For location: extract the full street address if available. If only a venue name
           try {
             await sendAlert(smsText);
             _addSmsSentUid(m.uid);
+            _alertedUids.add(m.uid);
             // Send detailed action email for phone-based reply
             const actionButtons = isMeeting ? [
               { label: "Accept & Reply", command: "approve", color: "#4ade80" },
@@ -2788,15 +3200,14 @@ For location: extract the full street address if available. If only a venue name
   // ── Check for active conversations (only SMS-eligible senders, skip already-alerted) ──
   if (smsTo) {
     try {
-      const alreadyAlerted = _getSmsSentUids();
-      const convoEligible = smsEligible.filter((m) => !alreadyAlerted.has(m.uid));
+      const convoEligible = smsEligible.filter((m) => !_alertedUids.has(m.uid));
       const conversationAlerts = await checkActiveConversations(convoEligible);
       if (conversationAlerts.length > 0) {
         const summary = conversationAlerts.map((a) =>
           `${a.from}: ${a.subject} (you replied ${a.replyCount}x)`
         ).join("\n");
         await sendAlert(`GideonMail: ${conversationAlerts.length} email${conversationAlerts.length > 1 ? "s" : ""} in active conversations:\n${summary}`);
-        conversationAlerts.forEach((a) => _addSmsSentUid(a.uid));
+        conversationAlerts.forEach((a) => { _addSmsSentUid(a.uid); _alertedUids.add(a.uid); });
       }
     } catch (e) {
       console.error("Conversation check failed:", e.message);
@@ -2811,8 +3222,27 @@ For location: extract the full street address if available. If only a venue name
   const apiKey = store.get("anthropic_api_key");
   if (!aiTriageEnabled || !apiKey || !smsTo) { _setLastCheckTime(); return; }
 
-  const alreadySentUids = _getSmsSentUids();
-  const untriaged = smsEligible.filter((m) => !alreadySentUids.has(m.uid));
+  let untriaged = smsEligible.filter((m) => !_alertedUids.has(m.uid));
+  if (!untriaged.length) { _setLastCheckTime(); return; }
+
+  // Pre-filter: skip obvious marketing/automated senders before AI even sees them
+  // BUT: if we have reply history with the sender, let them through (real relationship)
+  const marketingPatterns = /aliexpress|amazon\..*marketing|ebay.*promo|shein|shopify|mailchimp|sendgrid|campaign|newsletter|noreply|no-reply|donotreply|notifications?@|updates?@|news@|promo@|deals@|offers@|marketing@|sales@|info@|support@|hello@|mailer@|bulk|blast/i;
+  const marketingSubjPatterns = /% off|sale|deal|discount|clearance|save \$|coupon|promo|limited time|last chance|don.t miss|free shipping|order now|shop now|buy now|unsubscribe|weekly digest|newsletter/i;
+  const rep = store.get("sender_reputation") || {};
+  untriaged = untriaged.filter((m) => {
+    const addr = (m.from?.address || "").toLowerCase();
+    const subj = (m.subject || "");
+    // If we have reply history, always let through regardless of pattern
+    const senderRep = rep[addr];
+    if (senderRep && (senderRep.replied || 0) >= 1) return true;
+    // If on any list, let through
+    if (_senderListStatus(addr, m.from?.name)) return true;
+    // Block marketing patterns
+    if (marketingPatterns.test(addr)) return false;
+    if (marketingSubjPatterns.test(subj)) return false;
+    return true;
+  });
   if (!untriaged.length) { _setLastCheckTime(); return; }
 
   try {
@@ -2835,13 +3265,17 @@ URGENT means ALL of these must be true:
 - Contains a specific request, question, or time-sensitive matter
 
 SKIP means ANY of these:
-- Marketing, newsletter, promotion, or advertisement
-- Automated notification (cron, server alert, social media, shipping update)
+- Marketing, newsletter, promotion, advertisement, or sale notification — ALWAYS SKIP
+- Automated notification (cron, server alert, social media, shipping update, delivery tracking)
+- Any email from a company/brand/store/service — ALWAYS SKIP (companies don't send urgent personal emails)
 - Spam or unsolicited
 - Informational only (no action needed)
 - Can wait more than 24 hours
+- Contains words like: sale, deal, discount, off, coupon, promo, limited time, order, shipping, delivered
 
-Default to SKIP. When in doubt, SKIP. Only 1 in 20 emails should be URGENT.${getInstructionsBlock()}`,
+CRITICAL: Emails from companies like AliExpress, Amazon, eBay, Shein, banks, utilities, services, etc. are NEVER urgent — they are automated. Only emails from REAL INDIVIDUAL PEOPLE can be URGENT.
+
+Default to SKIP. When in doubt, SKIP. Only 1 in 50 emails should be URGENT.${getInstructionsBlock()}`,
       messages: [{ role: "user", content: emailList }],
     });
 
@@ -2900,7 +3334,8 @@ async function startIdle() {
       mainWindow?.webContents?.send("inbox-updated", initial);
       await autoTriageNewMail(initial.messages || []);
       await lowTouchProcess(initial.messages || []);
-    } catch (e) {}
+      await cleanupBlacklistedEmails();
+    } catch (e) { logToFile(`ERROR startup check: ${e.message}`); }
 
     // Fast VIP check every 5 minutes — just checks for new VIP/Watch emails
     // Lightweight: no AI triage, no security scan, just list matching + SMS
@@ -2915,7 +3350,7 @@ async function startIdle() {
         if (newUnread.length > 0) {
           await autoTriageNewMail(msgs);
         }
-      } catch (e) {}
+      } catch (e) { logToFile(`ERROR fast VIP check: ${e.message}`); }
     }, 300000); // 5 minutes
 
     // Full auto-check on configurable interval (default 120 min / 2 hours)
@@ -2928,8 +3363,10 @@ async function startIdle() {
         mainWindow?.webContents?.send("inbox-updated", result);
         await autoTriageNewMail(result.messages || []);
         await lowTouchProcess(result.messages || []);
+        await cleanupBlacklistedEmails();
       } catch (e) {
         // reconnect on next cycle
+        logToFile(`ERROR auto-check cycle: ${e.message}`);
       }
     }, checkMin * 60000);
 
@@ -3340,9 +3777,26 @@ async function executeEmailTool(toolName, toolInput, emailContext) {
       try {
         const lock = await client.getMailboxLock(folder);
         try {
-          let uids = await client.search({ subject: toolInput.query }, { uid: true });
-          if (!uids.length) {
-            uids = await client.search({ from: toolInput.query }, { uid: true });
+          const words = toolInput.query.trim().split(/\s+/);
+
+          async function searchWordInFolder(word) {
+            const results = new Set();
+            try { (await client.search({ subject: word }, { uid: true })).forEach(uid => results.add(uid)); } catch (e) {}
+            try { (await client.search({ from: word }, { uid: true })).forEach(uid => results.add(uid)); } catch (e) {}
+            try { (await client.search({ to: word }, { uid: true })).forEach(uid => results.add(uid)); } catch (e) {}
+            try { (await client.search({ body: word }, { uid: true })).forEach(uid => results.add(uid)); } catch (e) {}
+            return results;
+          }
+
+          let uids;
+          if (words.length > 1) {
+            const uidSets = [];
+            for (const word of words) {
+              uidSets.push(await searchWordInFolder(word));
+            }
+            uids = [...uidSets[0]].filter(uid => uidSets.every(s => s.has(uid)));
+          } else {
+            uids = [...(await searchWordInFolder(words[0]))];
           }
           if (!uids.length) return { success: true, results: [], message: "No emails found matching: " + toolInput.query };
           const results = [];
@@ -3648,6 +4102,34 @@ ipcMain.handle("check-update", async () => {
 
 ipcMain.handle("get-version", () => CURRENT_VERSION);
 
+// Service status — tells the renderer what's configured
+ipcMain.handle("service-status", () => ({
+  hasAI: !!store.get("anthropic_api_key"),
+  hasSMS: !!store.get("sms_to"),
+  hasActionEmail: store.get("action_email_enabled") === true && !!(store.get("action_email_address") || store.get("alert_email_to")),
+  hasCalendar: !!googleAuth?.isConnected,
+  hasAccount: !!store.get("account"),
+}));
+
+// Active sender lists visibility
+ipcMain.handle("active-lists-get", () => ({
+  customer: store.get("list_active_customer") === true, // default OFF — must be explicitly enabled
+  vip: store.get("list_active_vip") !== false,
+  watch: store.get("list_active_watch") !== false,
+  daily: store.get("list_active_daily") !== false,
+  blocked: store.get("list_active_blocked") !== false,
+  muted: store.get("list_active_muted") !== false,
+}));
+ipcMain.handle("active-lists-set", (_, cfg) => {
+  if (cfg.customer !== undefined) store.set("list_active_customer", cfg.customer);
+  if (cfg.vip !== undefined) store.set("list_active_vip", cfg.vip);
+  if (cfg.watch !== undefined) store.set("list_active_watch", cfg.watch);
+  if (cfg.daily !== undefined) store.set("list_active_daily", cfg.daily);
+  if (cfg.blocked !== undefined) store.set("list_active_blocked", cfg.blocked);
+  if (cfg.muted !== undefined) store.set("list_active_muted", cfg.muted);
+  return { ok: true };
+});
+
 ipcMain.handle("autolaunch-get", async () => {
   try { return { enabled: await autoLauncher.isEnabled() }; }
   catch (e) { return { enabled: false }; }
@@ -3872,6 +4354,9 @@ ipcMain.handle("watchlist-update", (_, id, updates) => {
 // ── Unified People list (merges VIP, Watch, Blacklist, Greylist) ─────────
 ipcMain.handle("people-get-all", () => {
   const people = [];
+  for (const item of store.get("customer_list") || []) {
+    people.push({ ...item, role: "customer" });
+  }
   for (const item of store.get("sms_whitelist") || []) {
     people.push({ ...item, role: "vip", actions: { smsAlert: true } });
   }
@@ -3901,7 +4386,11 @@ ipcMain.handle("people-add", (_, entry) => {
     created: new Date().toISOString(),
   };
 
-  if (role === "vip") {
+  if (role === "customer") {
+    const list = store.get("customer_list") || [];
+    list.push(base);
+    store.set("customer_list", list);
+  } else if (role === "vip") {
     const list = store.get("sms_whitelist") || [];
     list.push(base);
     store.set("sms_whitelist", list);
@@ -3931,7 +4420,7 @@ ipcMain.handle("people-add", (_, entry) => {
 
 ipcMain.handle("people-change-role", (_, id, oldRole, newRole) => {
   // Remove from old list
-  const storeKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
+  const storeKeys = { customer: "customer_list", vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
   const oldKey = storeKeys[oldRole];
   const newKey = storeKeys[newRole];
   if (!oldKey || !newKey) return { error: "Invalid role" };
@@ -3955,7 +4444,7 @@ ipcMain.handle("people-change-role", (_, id, oldRole, newRole) => {
 });
 
 ipcMain.handle("people-remove", (_, id, role) => {
-  const storeKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
+  const storeKeys = { customer: "customer_list", vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
   const key = storeKeys[role];
   if (!key) return { error: "Invalid role" };
   let list = store.get(key) || [];
@@ -3965,7 +4454,7 @@ ipcMain.handle("people-remove", (_, id, role) => {
 });
 
 ipcMain.handle("people-toggle", (_, id, role) => {
-  const storeKeys = { vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
+  const storeKeys = { customer: "customer_list", vip: "sms_whitelist", watch: "ai_watchlist", blocked: "sms_blacklist", muted: "sms_greylist", daily: "daily_update_list" };
   const key = storeKeys[role];
   if (!key) return { error: "Invalid role" };
   const list = store.get(key) || [];
@@ -4000,6 +4489,7 @@ function _listCRUD(storeKey) {
 const blacklistOps = _listCRUD("sms_blacklist");
 const greylistOps = _listCRUD("sms_greylist");
 const dailyUpdateOps = _listCRUD("daily_update_list");
+const customerOps = _listCRUD("customer_list");
 
 ipcMain.handle("blacklist-get", () => blacklistOps.get());
 ipcMain.handle("blacklist-add", (_, e) => blacklistOps.add(e));
@@ -4019,16 +4509,70 @@ ipcMain.handle("daily-update-remove", (_, id) => dailyUpdateOps.remove(id));
 ipcMain.handle("daily-update-toggle", (_, id) => dailyUpdateOps.toggle(id));
 ipcMain.handle("daily-update-update", (_, id, u) => dailyUpdateOps.update(id, u));
 
+ipcMain.handle("customer-get", () => customerOps.get());
+ipcMain.handle("customer-add", (_, e) => customerOps.add(e));
+ipcMain.handle("customer-remove", (_, id) => customerOps.remove(id));
+ipcMain.handle("customer-toggle", (_, id) => customerOps.toggle(id));
+ipcMain.handle("customer-update", (_, id, u) => customerOps.update(id, u));
+
+// Customer item tracking
+ipcMain.handle("customer-items-get", (_, addr) => {
+  const items = store.get("customer_items") || {};
+  return addr ? (items[addr.toLowerCase()] || { items: [] }) : items;
+});
+ipcMain.handle("customer-item-update", (_, addr, itemId, updates) => {
+  const items = store.get("customer_items") || {};
+  const key = addr.toLowerCase();
+  if (!items[key]) return { error: "Customer not found" };
+  const item = items[key].items?.find((i) => i.id === itemId);
+  if (!item) return { error: "Item not found" };
+  Object.assign(item, updates);
+  store.set("customer_items", items);
+  return { ok: true };
+});
+ipcMain.handle("customer-action-done", (_, addr, itemId, actionIdx) => {
+  const items = store.get("customer_items") || {};
+  const key = addr.toLowerCase();
+  const item = items[key]?.items?.find((i) => i.id === itemId);
+  if (item?.actionItems?.[actionIdx]) {
+    item.actionItems[actionIdx].done = true;
+    store.set("customer_items", items);
+  }
+  return { ok: true };
+});
+
 // Check which list a sender is on (for UI coloring and SMS logic)
+// Shared sender matching — used everywhere. Single source of truth.
+function _matchesSender(addr, name, entry) {
+  if (!entry.address) return false;
+  const a = (addr || "").toLowerCase();
+  const n = (name || "").toLowerCase();
+  const w = entry.address.toLowerCase();
+  // Exact match
+  if (a === w) return true;
+  // Domain match: @domain.com matches any email ending with that domain
+  if (w.startsWith("@")) return a.endsWith(w);
+  // Substring match for partial addresses
+  return a.includes(w) || n.includes(w);
+}
+
+function _matchesSenderList(fromAddress, fromName, list) {
+  return list.filter((w) => w.enabled !== false).some((w) => _matchesSender(fromAddress, fromName, w));
+}
+
+function _findSenderInList(fromAddress, fromName, list) {
+  return list.filter((w) => w.enabled !== false).find((w) => _matchesSender(fromAddress, fromName, w));
+}
+
 function _senderListStatus(fromAddress, fromName) {
-  const addr = (fromAddress || "").toLowerCase();
-  const name = (fromName || "").toLowerCase();
-  const match = (list) => list.filter((w) => w.enabled).some((w) => w.address && (addr === w.address || addr.includes(w.address) || name.includes(w.address)));
-  if (match(store.get("sms_blacklist") || [])) return "blacklist";
-  if (match(store.get("daily_update_list") || [])) return "daily";
-  if (match(store.get("sms_greylist") || [])) return "greylist";
-  if (match(store.get("ai_watchlist") || [])) return "watch";
+  const match = (list) => _matchesSenderList(fromAddress, fromName, list);
+  // Priority order: Customer first (highest), then VIP, Watch, Daily, Blocked, Muted
+  if (match(store.get("customer_list") || [])) return "customer";
   if (match(store.get("sms_whitelist") || [])) return "whitelist";
+  if (match(store.get("ai_watchlist") || [])) return "watch";
+  if (match(store.get("daily_update_list") || [])) return "daily";
+  if (match(store.get("sms_blacklist") || [])) return "blacklist";
+  if (match(store.get("sms_greylist") || [])) return "greylist";
   return null;
 }
 
@@ -4115,7 +4659,7 @@ ipcMain.handle("check-now", async () => {
       const fromAddr = (msg.from?.address || "").toLowerCase();
       const fromName = (msg.from?.name || "").toLowerCase();
       for (const w of whitelist) {
-        if (w.address && (fromAddr === w.address || fromAddr.includes(w.address) || fromName.includes(w.address))) {
+        if (_matchesSender(fromAddr, fromName, w)) {
           wlMatches++;
           log.push(`  VIP match: ${msg.from?.address} → ${w.address}`);
           break;
@@ -4262,6 +4806,7 @@ IMPORTANT RULES:
 // ── AI: Extract event from email ─────────────────────────────────────────
 ipcMain.handle("ai-extract-event", async (_, email) => {
   try {
+    if (!store.get("anthropic_api_key")) return { error: "No AI key configured. Add it in Settings." };
     const client = getAnthropicClient();
     const content = email.text || email.html?.replace(/<[^>]+>/g, " ").substring(0, 3000) || "";
     const today = new Date().toISOString().split("T")[0];
@@ -4682,10 +5227,7 @@ async function sendMorningBriefing() {
 
     // VIP count
     const whitelist = (store.get("sms_whitelist") || []).filter((w) => w.enabled);
-    const _matchWl = (msg) => whitelist.some((w) => {
-      const addr = (msg.from?.address || "").toLowerCase();
-      return w.address && addr.includes(w.address);
-    });
+    const _matchWl = (msg) => _matchesSenderList(msg.from?.address, msg.from?.name, whitelist);
     const vipCount = msgs.filter((m) => !m.seen && _matchWl(m)).length;
 
     // Pending appointments
@@ -4726,7 +5268,7 @@ async function sendMorningBriefing() {
       for (const msg of msgs) {
         const addr = (msg.from?.address || "").toLowerCase();
         const name = (msg.from?.name || "").toLowerCase();
-        if (dailyList.some((d) => d.address && (addr === d.address || addr.includes(d.address) || name.includes(d.address)))) {
+        if (_matchesSenderList(addr, name, dailyList)) {
           dailyMatches.push(msg);
         }
       }
@@ -5015,6 +5557,14 @@ async function sendSmartDigest() {
           : actionInfo?.action === "filed_receipt" ? "🧾 → Receipts"
           : actionInfo?.action === "filed_notification" ? "🔔 → Notifications"
           : actionInfo?.action === "draft_reply" ? "✏️ Draft reply awaiting approval"
+          : actionInfo?.action === "meeting_approval" ? "📅 Meeting — sent for approval"
+          : actionInfo?.action === "deadline_alert" ? "⏰ Deadline alert sent"
+          : actionInfo?.action === "low_confidence" ? "❓ Low confidence — filed as notification"
+          : actionInfo?.action === "first_contact" ? "👤 First contact — marked read, no action"
+          : actionInfo?.action === "spam_filtered" ? "🛡 Blocked by security filters"
+          : actionInfo?.action === "safeguard_blocked" ? "🚫 Blocked by safeguard"
+          : actionInfo?.action?.startsWith("cat_") ? `📋 ${actionInfo.detail || actionInfo.action}`
+          : actionInfo?.detail ? `✓ ${actionInfo.detail}`
           : "✓ Processed";
         autoHandledItems.push({ msg: m, badge: actionBadge, action: actionInfo?.action || "unknown" });
         continue;
@@ -5123,8 +5673,14 @@ async function sendSmartDigest() {
       }
       if (filed.length > 0) {
         items.push(`<b style="color:#4ade80">📂 Auto-filed (${filed.length}):</b>`);
-        for (const i of filed.slice(0, 5)) items.push(`&nbsp;&nbsp;${i.badge} — ${i.msg.from?.name || i.msg.from?.address}: ${i.msg.subject}`);
-        if (filed.length > 5) items.push(`&nbsp;&nbsp;<i>...and ${filed.length - 5} more</i>`);
+        for (const i of filed.slice(0, 8)) {
+          // Check if action detail has a stored content link (format: "Moved to Newsletters | https://...")
+          const actionInfo = autoActions[String(i.msg.uid)];
+          const linkMatch = actionInfo?.detail?.match(/\|\s*(https?:\/\/\S+)/);
+          const readLink = linkMatch ? ` — <a href="${linkMatch[1]}" style="color:#7c6cff;text-decoration:underline">Read</a>` : "";
+          items.push(`&nbsp;&nbsp;${i.badge} — ${i.msg.from?.name || i.msg.from?.address}: ${i.msg.subject}${readLink}`);
+        }
+        if (filed.length > 8) items.push(`&nbsp;&nbsp;<i>...and ${filed.length - 8} more</i>`);
       }
       if (drafts.length > 0) {
         items.push(`<b style="color:#7c6cff">✏️ Draft replies awaiting approval (${drafts.length}):</b>`);
@@ -5132,7 +5688,8 @@ async function sendSmartDigest() {
       }
       if (other.length > 0) {
         items.push(`<b style="color:#94a3b8">✓ Other processed (${other.length}):</b>`);
-        for (const i of other.slice(0, 3)) items.push(`&nbsp;&nbsp;${i.msg.from?.name || i.msg.from?.address}: ${i.msg.subject}`);
+        for (const i of other.slice(0, 5)) items.push(`&nbsp;&nbsp;${i.badge} — ${i.msg.from?.name || i.msg.from?.address}: ${i.msg.subject}`);
+        if (other.length > 5) items.push(`&nbsp;&nbsp;<i>...and ${other.length - 5} more</i>`);
       }
       sections.push({ title: "Auto-Handled by GideonMail", color: "#22c55e", icon: "⚡", items });
     }

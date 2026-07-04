@@ -43,6 +43,9 @@ contextBridge.exposeInMainWorld("gideon", {
   autocheckGet:  () => ipcRenderer.invoke("autocheck-get"),
   autocheckSave: (c) => ipcRenderer.invoke("autocheck-save", c),
 
+  // Service status
+  serviceStatus:        ()   => ipcRenderer.invoke("service-status"),
+
   // Statistics
   statsGet:             ()   => ipcRenderer.invoke("stats-get"),
 
@@ -68,6 +71,10 @@ contextBridge.exposeInMainWorld("gideon", {
   // Updates
   checkUpdate: () => ipcRenderer.invoke("check-update"),
   getVersion:  () => ipcRenderer.invoke("get-version"),
+
+  // Active sender lists
+  activeListsGet: () => ipcRenderer.invoke("active-lists-get"),
+  activeListsSet: (cfg) => ipcRenderer.invoke("active-lists-set", cfg),
 
   // Auto-launch
   autolaunchGet: () => ipcRenderer.invoke("autolaunch-get"),
@@ -114,6 +121,16 @@ contextBridge.exposeInMainWorld("gideon", {
   greylistToggle:  (id)      => ipcRenderer.invoke("greylist-toggle", id),
   greylistUpdate:  (id, u)   => ipcRenderer.invoke("greylist-update", id, u),
   senderStatusBulk:(msgs)    => ipcRenderer.invoke("sender-list-status-bulk", msgs),
+
+  // Customer list + items
+  customerGet:         ()              => ipcRenderer.invoke("customer-get"),
+  customerAdd:         (e)             => ipcRenderer.invoke("customer-add", e),
+  customerRemove:      (id)            => ipcRenderer.invoke("customer-remove", id),
+  customerToggle:      (id)            => ipcRenderer.invoke("customer-toggle", id),
+  customerUpdate:      (id, u)         => ipcRenderer.invoke("customer-update", id, u),
+  customerItemsGet:    (addr)          => ipcRenderer.invoke("customer-items-get", addr),
+  customerItemUpdate:  (addr, id, u)   => ipcRenderer.invoke("customer-item-update", addr, id, u),
+  customerActionDone:  (addr, id, idx) => ipcRenderer.invoke("customer-action-done", addr, id, idx),
 
   // Daily Update list
   dailyUpdateGet:    ()        => ipcRenderer.invoke("daily-update-get"),

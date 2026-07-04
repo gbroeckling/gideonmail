@@ -1,5 +1,15 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+.help-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #7c6cff22; border: 1px solid #7c6cff44;
+  color: #a78bfa; font-size: 9px; font-weight: 700;
+  cursor: pointer; vertical-align: middle; margin-left: 3px;
+  transition: background 0.15s;
+}
+.help-btn:hover { background: #7c6cff44; }
+
 :root {
   --bg: #111113;
   --bg2: #1a1a1f;

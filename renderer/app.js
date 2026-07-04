@@ -4,6 +4,426 @@
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+// ── Help System ─────────────────────────────────────────────────────────
+const HELP = {
+  "low-touch": {
+    title: "Low Touch Autopilot",
+    text: `Low Touch mode lets AI manage your email autonomously. When enabled, every new email from unknown senders is categorized (spam, newsletter, receipt, notification, action, meeting, deadline) and acted on automatically.
+
+**What it does:**
+• Deletes spam and scams (with 13 safeguards to prevent false positives)
+• Files newsletters, receipts, and notifications into folders
+• Drafts replies in your voice for emails that need a response (sent to your phone for one-tap approval)
+• Auto-unsubscribes from newsletters you never read
+• Auto-schedules calendar events from meeting emails
+• Sends follow-up nudges when your emails go unanswered
+
+**Safeguards:** First-time senders never get auto-replied to. DKIM/SPF/DMARC is checked. Scam content is AI-detected. Rate limits prevent mass actions. All actions are logged.
+
+**Implications:** This uses your Anthropic API key (~$0.003/email). Emails are sent to Claude for analysis. The AI makes mistakes occasionally — review the Stats tab to see what it's doing.
+
+**Best for:** Busy inboxes, old accounts you don't check, catch-all addresses.`
+  },
+  "summarize": {
+    title: "Summarize Now",
+    text: `Generates an instant AI-powered briefing of your current inbox.
+
+**What it does:**
+• AI analyzes your 20 most recent emails
+• Produces a 3-5 bullet point summary (what needs attention, what can wait, urgent items)
+• Suggests sender management actions for unknown senders (block, mute, daily, etc.)
+• Sends the summary + recommendations to your phone via SMS
+• Sends an action email with per-sender buttons you can tap to act
+
+**Also available:** Right-click the system tray icon → "Summarize Now" to get a summary without opening the app.
+
+**Cost:** One API call (~$0.01) per summary.`
+  },
+  "customer": {
+    title: "Customer (CRM-Lite)",
+    text: `Customer is the highest priority role — above VIP. Designed for important business contacts where you need to track projects, action items, and follow-ups.
+
+**What happens when a Customer emails you:**
+• Full AI deep analysis of the email (not just category — extracts every action item, question, and deadline)
+• Emails are grouped by topic/project (AI detects if it's a new item or continuation)
+• Action items tracked per customer with owners (you vs them) and due dates
+• Questions asked are extracted and listed
+• Sentiment analysis (positive, neutral, negative, urgent)
+• Calendar slots included in action email when a meeting is requested
+• SMS alert with action item count
+• Full customer context in action emails (open items, history)
+
+**Action email includes:**
+• AI summary + all action items listed
+• Available calendar time slots (next 3 free hours) as one-tap buttons
+• Mark Resolved / Needs Follow-up / Reply buttons
+• Open items tracker for this customer
+
+**Item tracking:**
+• Each email is assigned to a project/item (AI groups related emails)
+• Status: open → urgent → pending → resolved
+• Action items per item with due dates and ownership
+• Customer dashboard in Smart Digest
+
+**Use for:** Clients, key business contacts, anyone where you need to track deliverables and follow-ups across multiple emails.`
+  },
+  "vip": {
+    title: "VIP Senders",
+    text: `VIP is the second-highest priority sender role (after Customer). Emails from VIP senders always trigger an SMS text to your phone.
+
+**What happens:**
+• Immediate SMS alert with AI summary
+• Meeting detection — meetings auto-detected and scheduled on your calendar
+• Deadline detection — due dates flagged in the SMS
+• DKIM/SPF/DMARC verified — if authentication fails, you get a SPOOF WARNING
+• Spam filters are skipped (you trust this sender)
+• White background in the inbox
+
+**Use for:** Family, close business contacts, your boss, your accountant — anyone whose email you never want to miss.`
+  },
+  "watch": {
+    title: "Watch List",
+    text: `Watch senders get AI analysis on every email with configurable actions.
+
+**What happens:**
+• Full AI analysis of every email (summary, urgency, suggested action)
+• Configurable per sender: SMS alerts, auto-calendar, flag as important
+• Spam filters are skipped
+• Amber/gold highlighting in the inbox
+
+**Use for:** Important services (banks auto-detected), key clients, project contacts — senders you want monitored but not at VIP priority.`
+  },
+  "daily-update": {
+    title: "Daily Update",
+    text: `Daily Update senders are batched into your morning briefing instead of triggering individual alerts.
+
+**What happens:**
+• No individual SMS or notifications
+• All emails summarized by AI and included in the morning briefing
+• Green highlighting in the inbox
+• Spam filters are skipped
+
+**Use for:** Amazon, UPS, PayPal, utility companies — senders whose emails are useful to know about but not urgent. "3 packages shipped, 1 invoice received" in one daily summary.`
+  },
+  "blocked": {
+    title: "Blocked Senders",
+    text: `Blocked senders are filtered, quarantined, and auto-deleted after 7 days.
+
+**What happens:**
+• Full security filter scan (all 8 layers)
+• Never triggers SMS or notifications
+• Red highlighting in the inbox
+• Auto-deleted after 7 days
+• Bayesian filter learns from blocked patterns
+
+**Use for:** Spammers, scammers, persistent marketers, anyone you never want to hear from again.`
+  },
+  "muted": {
+    title: "Muted Senders",
+    text: `Muted senders are silently received with no notifications or processing.
+
+**What happens:**
+• No SMS, no notifications, no AI analysis
+• Spam filters are skipped (you acknowledge this sender)
+• Light blue highlighting in the inbox
+• Emails stay in inbox untouched
+
+**Use for:** Senders you don't want to block but don't need alerts for. Social media notifications, low-priority mailing lists.`
+  },
+  "security-filters": {
+    title: "Security Filters (8 Layers)",
+    text: `Eight independent scanning layers protect your inbox from threats. Only emails from unknown and blocked senders are scanned — VIP, Watch, Muted, and Daily Update senders are exempt.
+
+**Layer 0 — DKIM/DMARC/SPF:** Verifies sender authentication. Always runs. Detects spoofed addresses.
+**Layer 1 — SpamAssassin:** Reads server-side spam scores from your mail server.
+**Layer 2 — Spamhaus ZEN:** DNS blocklist lookup for sender IP.
+**Layer 3 — VirusTotal:** Scans URLs against 70+ antivirus engines (needs API key).
+**Layer 4 — Google Safe Browsing:** URL threat detection (needs API key).
+**Layer 5 — PhishTank:** Community-verified phishing URL database.
+**Layer 6 — AbuseIPDB:** IP reputation scoring (needs API key).
+**Layer 7 — ClamAV:** Local antivirus for attachments (needs ClamAV installed).
+**Layer 8 — Bayesian:** Pattern-based filter that learns from your actions over time.
+
+**All API keys are free tier.** Most have generous daily limits.`
+  },
+  "auto-unsub": {
+    title: "Auto-Unsubscribe",
+    text: `When Low Touch categorizes an email as a newsletter, it automatically unsubscribes you.
+
+**How it works:**
+1. Checks for List-Unsubscribe header (RFC 8058) — most reliable
+2. Sends mailto: unsubscribe email OR posts to HTTP one-click endpoint
+3. If no header exists, scans the email body for unsubscribe links and clicks them
+
+**Safeguard:** The unsubscribe target domain must match the sender domain. This prevents attackers from using fake List-Unsubscribe headers to make you email innocent third parties.
+
+**Implication:** You may miss future emails from unsubscribed senders. If you change your mind, add them to a list (Watch, Daily, etc.) to override.`
+  },
+  "auto-nudge": {
+    title: "Auto Follow-up Nudge",
+    text: `When you send an email and don't get a reply within N days, the AI sends a polite follow-up in your voice.
+
+**How it works:**
+• Scans your Sent folder for emails older than the configured days
+• Checks if the recipient replied (searches inbox for their address)
+• If no reply found, AI drafts a natural follow-up using your voice profile
+• Sends it automatically
+
+**Safeguard:** Only nudges addresses you have prior interaction history with (opened or replied to their emails before). First-time contacts are never auto-nudged.
+
+**Implication:** The follow-up is sent from your email address. The recipient sees it as a normal email from you.`
+  },
+  "max-per-cycle": {
+    title: "Emails Per Cycle",
+    text: `Controls how many emails Low Touch processes in each check cycle (default: every 2 hours).
+
+**Default: 100.** Range: 5–1000.
+
+**Lower values (5-20):** Slower processing, lower API costs, less risk from mistakes.
+**Higher values (200-1000):** Catches up faster on backlogs, higher API cost per cycle.
+
+**For reference:** 100 emails × $0.003 = $0.30 per cycle. At 12 cycles/day = $3.60/day. Most accounts process far fewer.`
+  },
+  "archive-lookback": {
+    title: "Archive Lookback",
+    text: `Normally Low Touch only processes new unread emails. Archive lookback also processes older read emails that were never categorized.
+
+**Default: 0 (disabled).** Range: 0–365 days.
+
+**Use for:** When you first enable Low Touch on an account with months of uncategorized email. Set to 30 to process the last month, then set back to 0.
+
+**Implication:** Higher values process more emails per cycle and use more API credits. Set temporarily, not permanently.`
+  },
+  "digest-max": {
+    title: "Digest Max Emails",
+    text: `Controls how many emails the Smart Digest email includes.
+
+**Default: 60.** Range: 20–500.
+
+Higher values give a more complete daily briefing but make the email longer. For accounts with 500+ daily emails, increase this. For personal accounts, 60 is plenty.`
+  },
+  "sms-format": {
+    title: "SMS Format",
+    text: `Controls how sender and subject appear in text message alerts.
+
+• **Sender — Subject:** "Nicole — Meeting Thursday" (default, most context)
+• **Subject only:** "Meeting Thursday" (shorter, no sender name)
+• **Sender: Subject:** "Nicole: Meeting Thursday" (compact)
+
+Each text costs one Textbelt credit regardless of length (up to 160 chars).`
+  },
+  "quiet-hours": {
+    title: "Quiet Hours",
+    text: `SMS alerts are suppressed during quiet hours. Emails are still processed — alerts are just held until quiet hours end.
+
+**Default:** 10 PM to 7 AM.
+
+VIP alerts still process during quiet hours but the SMS is delayed. Meeting detection and calendar events still fire immediately.`
+  },
+  "conversation-alerts": {
+    title: "Conversation Alerts",
+    text: `Texts you when someone replies to a thread you've been active in — even if the sender isn't VIP.
+
+**How it works:** Tracks threads where you've replied 2+ times in the last 6 months. When a new reply arrives, you get an SMS.
+
+**Use for:** Staying on top of active discussions without promoting every participant to VIP.
+
+**Implication:** Can be noisy if you reply to many threads. Adjust "min replies" to filter.`
+  },
+  "action-email": {
+    title: "Action Email Relay",
+    text: `Control your inbox from your phone without opening the app. GideonMail sends branded HTML emails with one-tap action buttons.
+
+**Each action email includes:**
+• AI assessment (summary, sender legitimacy, risk rating)
+• Email preview text
+• Action buttons: Reply, Approve, Decline, Reschedule, Later, Ignore
+• Sender management: VIP, Watch, Daily, Block, Mute
+
+**Security:** Every action email has a unique 12-character verification code. Forged replies are rejected. Processed action emails auto-delete.
+
+**Requires:** An email address you check on your phone (e.g., Gmail).`
+  },
+  "commitment-tracking": {
+    title: "Commitment Tracking",
+    text: `AI scans your outgoing emails for promises and tracks them.
+
+**What it catches:** "I'll send that by Friday," "Let me get back to you," "I'll have the numbers by EOD"
+
+**Also tracks incoming:** Promises others make to you. "I'll deliver the files by Wednesday."
+
+**Notifications:** SMS nudge when commitments are due or overdue. Shown in the Smart Digest under "Your Promises" and "Owed to You."
+
+**Implication:** Only runs in Low Touch mode. Scans outgoing emails sent through GideonMail.`
+  },
+  "reputation": {
+    title: "Sender Reputation Learning",
+    text: `GideonMail tracks how you interact with each sender and suggests role changes over time.
+
+**Tracked:** Opens, replies, deletes, and ignores (48h+ unopened).
+
+**Suggestions:**
+• Deleted >70% → suggest Blocked
+• Replied >50% → suggest Watch
+• Ignored >80% → suggest Muted
+
+Suggestions appear in the Smart Digest email. You decide — the AI never auto-promotes to VIP.`
+  },
+  "voice-learning": {
+    title: "Voice Learning",
+    text: `AI samples your last 20 sent emails to learn your writing style — tone, vocabulary, greetings, sign-offs.
+
+**Used for:** Auto-drafted replies and follow-up nudges that sound like you wrote them.
+
+**Refreshed:** Weekly. Click "Learn My Voice Now" to force a refresh.
+
+**Privacy:** Your sent emails are sent to the Anthropic API for analysis. The voice profile is stored locally.`
+  },
+  "keyboard-shortcuts": {
+    title: "Keyboard Shortcuts",
+    text: `**D** — Delete current email
+**R** — Reply / open compose
+**S** — Star / flag current email
+**C** — Compose new email
+**J** — Next message
+**K** — Previous message
+**/** — Focus search bar
+
+Shortcuts are disabled when typing in input fields.`
+  },
+  "export-import": {
+    title: "Export / Import Config",
+    text: `**Export:** Saves all your settings, sender lists, standing instructions, and statistics to a single JSON file.
+
+**Import:** Restores settings from an exported file. Overwrites current configuration.
+
+**Use for:**
+• Backup before major changes
+• Migrating to a new computer
+• Moving to Relegate (same config format)
+• Sharing configuration between accounts`
+  },
+  "stats": {
+    title: "Statistics",
+    text: `Tracks everything GideonMail does automatically:
+
+• Spam/scam blocked and deleted
+• Newsletters filed to folders
+• Receipts organized
+• AI reply drafts created
+• Commitments tracked (yours + owed to you)
+• Follow-up nudges sent
+• Newsletters unsubscribed
+• Digest emails sent
+• Total inbox checks
+
+Stats are tracked daily, weekly, and all-time. Weekly stats are included in the Smart Digest email.`
+  },
+  "bulk-actions": {
+    title: "Bulk Actions",
+    text: `Select multiple emails with checkboxes, then act on all of them at once.
+
+**Select:** Click individual checkboxes, or use "Select All" at the top.
+**Actions:** Delete, Mark Read, Flag, Block Sender.
+
+Block Sender collects all unique sender addresses from selected emails and adds them to the Blocked list.`
+  },
+  "ai-urgency": {
+    title: "AI Urgency Triage",
+    text: `When enabled, AI scans emails from unknown senders and texts you if any are genuinely urgent.
+
+**Very selective:** Only 1 in 20 emails should trigger. Must be from a real human, require action within hours, and contain a specific request.
+
+**Disabled by default.** Enable only if you want SMS alerts for emails from people not on any list.
+
+**Implication:** Can generate false positives from well-crafted spam. The 13 spam safeguards help but aren't perfect.`
+  },
+};
+
+async function showHelp(key) {
+  const h = HELP[key];
+  if (!h) return;
+
+  // Fetch live settings for dynamic help content
+  let lt = {}, sms = {}, status = {}, stats = {}, people = [];
+  try {
+    [lt, sms, status, stats, people] = await Promise.all([
+      gideon.lowTouchGet().catch(() => ({})),
+      gideon.smsSettingsGet().catch(() => ({})),
+      gideon.serviceStatus().catch(() => ({})),
+      gideon.statsGet().catch(() => ({ total: {} })),
+      gideon.peopleGetAll().catch(() => []),
+    ]);
+  } catch (e) {}
+
+  const peopleCounts = { vip: 0, watch: 0, daily: 0, blocked: 0, muted: 0 };
+  for (const p of people) peopleCounts[p.role] = (peopleCounts[p.role] || 0) + 1;
+  const t = stats.total || {};
+
+  // Dynamic status line for each help entry
+  const dynStatus = {
+    "low-touch": `**Currently:** ${lt.enabled ? "ON" : "OFF"} | ${lt.maxPerCycle || 100} emails/cycle | AI: ${status.hasAI ? "Connected" : "Not configured"}`,
+    "summarize": `**AI:** ${status.hasAI ? "Ready" : "Not configured"} | **SMS:** ${status.hasSMS ? "Ready" : "Not configured"} | **Action Email:** ${status.hasActionEmail ? "Ready" : "Not configured"}`,
+    "customer": `**Currently:** ${peopleCounts.customer || 0} Customer sender${(peopleCounts.customer || 0) !== 1 ? "s" : ""} configured | AI: ${status.hasAI ? "Ready" : "Required"} | Calendar: ${status.hasCalendar ? "Connected" : "Not connected"} | ${t.customer_emails || 0} customer emails processed`,
+    "vip": `**Currently:** ${peopleCounts.vip} VIP sender${peopleCounts.vip !== 1 ? "s" : ""} configured | SMS: ${status.hasSMS ? "Active" : "No phone set"} | Calendar: ${status.hasCalendar ? "Connected" : "Not connected"}`,
+    "watch": `**Currently:** ${peopleCounts.watch} Watch sender${peopleCounts.watch !== 1 ? "s" : ""} configured`,
+    "daily-update": `**Currently:** ${peopleCounts.daily} Daily Update sender${peopleCounts.daily !== 1 ? "s" : ""} configured`,
+    "blocked": `**Currently:** ${peopleCounts.blocked} blocked sender${peopleCounts.blocked !== 1 ? "s" : ""} | ${t.spam_blocked || 0} spam blocked all-time`,
+    "muted": `**Currently:** ${peopleCounts.muted} muted sender${peopleCounts.muted !== 1 ? "s" : ""} configured`,
+    "security-filters": `**AI:** ${status.hasAI ? "Ready" : "Not configured"} | All-time: ${(t.spam_blocked || 0) + (t.scam_blocked || 0)} threats blocked`,
+    "auto-unsub": `**Currently:** ${lt.autoUnsub ? "ON" : "OFF"} | ${t.unsubscribed || 0} newsletters unsubscribed all-time`,
+    "auto-nudge": `**Currently:** ${lt.autoNudge ? "ON" : "OFF"} | Nudge after: ${lt.nudgeDays || 5} days | ${t.nudges_sent || 0} nudges sent all-time`,
+    "max-per-cycle": `**Currently set to:** ${lt.maxPerCycle || 100} emails per cycle`,
+    "archive-lookback": `**Currently set to:** ${lt.archiveLookbackDays || 0} days (${lt.archiveLookbackDays ? "processing older emails" : "new emails only"})`,
+    "digest-max": `**Currently set to:** ${lt.digestMaxEmails || 60} emails per digest`,
+    "sms-format": `**Current format:** ${sms.format || "sender_subject"} | Max length: ${sms.maxLength || 160} chars | Phone: ${status.hasSMS ? "Configured" : "Not set"}`,
+    "quiet-hours": `**Currently:** ${sms.quietStart ?? 22}:00 to ${sms.quietEnd ?? 7}:00`,
+    "conversation-alerts": `**SMS:** ${status.hasSMS ? "Active" : "No phone configured"}`,
+    "action-email": `**Currently:** ${status.hasActionEmail ? "Enabled" : "Not configured"} | AI: ${status.hasAI ? "Ready" : "Not configured"}`,
+    "commitment-tracking": `**Low Touch:** ${lt.enabled ? "ON" : "OFF"} | ${t.commitments_tracked || 0} commitments tracked all-time`,
+    "reputation": `**Senders tracked:** ${Object.keys(stats.total || {}).length > 0 ? "Active" : "No data yet"}`,
+    "voice-learning": `**Voice profile:** ${lt.voiceProfile ? "Learned" : "Not yet learned"} | AI: ${status.hasAI ? "Ready" : "Not configured"}`,
+    "stats": `**All-time:** ${t.spam_blocked || 0} spam blocked, ${t.newsletters_filed || 0} newsletters filed, ${t.drafts_created || 0} drafts, ${t.commitments_tracked || 0} commitments`,
+    "ai-urgency": `**Currently:** ${status.hasAI ? "Available" : "Requires AI key"} | SMS: ${status.hasSMS ? "Ready" : "Not configured"}`,
+  };
+
+  const statusLine = dynStatus[key] || "";
+
+  // Remove existing help popup
+  const existing = document.getElementById("helpPopup");
+  if (existing) existing.remove();
+
+  const popup = document.createElement("div");
+  popup.id = "helpPopup";
+  popup.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:450px;max-height:80vh;overflow-y:auto;background:#1a1a1f;border:1px solid #7c6cff;border-radius:12px;padding:0;z-index:10000;box-shadow:0 20px 60px rgba(0,0,0,0.8)";
+
+  const statusHtml = statusLine ? `<div style="padding:8px 20px;background:#111113;border-bottom:1px solid #2a2a32;font-size:11px;color:#8b8b96">${statusLine.replace(/\*\*(.+?)\*\*/g, '<strong style="color:#a78bfa">$1</strong>')}</div>` : "";
+
+  popup.innerHTML = `
+    <div style="background:linear-gradient(135deg,#7c6cff,#6355e0);padding:12px 20px;display:flex;justify-content:space-between;align-items:center;border-radius:11px 11px 0 0">
+      <span style="color:#fff;font-size:14px;font-weight:700">${h.title}</span>
+      <span id="helpClose" style="color:#e0d4ff;cursor:pointer;font-size:18px;padding:0 4px">&times;</span>
+    </div>
+    ${statusHtml}
+    <div style="padding:16px 20px;color:#e4e4e8;font-size:12px;line-height:1.7;white-space:pre-wrap">${h.text.replace(/\*\*(.+?)\*\*/g, '<strong style="color:#a78bfa">$1</strong>').replace(/•/g, '<span style="color:#7c6cff">•</span>')}</div>
+  `;
+  document.body.appendChild(popup);
+  popup.querySelector("#helpClose").addEventListener("click", () => popup.remove());
+  // Close on Escape
+  const esc = (e) => { if (e.key === "Escape") { popup.remove(); document.removeEventListener("keydown", esc); } };
+  document.addEventListener("keydown", esc);
+}
+
+// Global help button click handler
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".help-btn");
+  if (btn && btn.dataset.help) {
+    e.stopPropagation();
+    e.preventDefault();
+    if (typeof showHelp === "function") showHelp(btn.dataset.help);
+  }
+});
+
 let currentFolder = "INBOX";
 let currentPage = 0;
 let currentMessages = [];
@@ -37,6 +457,34 @@ async function init() {
     console.error("loadMessages failed:", e);
   }
   checkPendingAppointments();
+
+  // Check service status and hide/disable features that can't run
+  try {
+    const status = await gideon.serviceStatus();
+    window._serviceStatus = status;
+
+    // No AI — hide/disable AI-dependent features
+    if (!status.hasAI) {
+      $("#btnSummarizeNow").style.display = "none";
+      $("#aiTriage")?.setAttribute("disabled", "true");
+      $("#aiAnalyze")?.setAttribute("disabled", "true");
+      if ($("#aiTriage")) { $("#aiTriage").style.opacity = "0.4"; $("#aiTriage").title = "Requires AI key (Settings)"; }
+      if ($("#aiAnalyze")) { $("#aiAnalyze").style.opacity = "0.4"; $("#aiAnalyze").title = "Requires AI key (Settings)"; }
+      // Hide Low Touch toggle (needs AI)
+      $("#lowTouchToggle").style.opacity = "0.4";
+      $("#lowTouchToggle").title = "Requires AI key (Settings)";
+    }
+
+    // No SMS — dim SMS-related indicators
+    if (!status.hasSMS) {
+      // SMS settings tab still accessible for setup, but note no phone configured
+    }
+
+    // No Calendar — hide calendar buttons
+    if (!status.hasCalendar) {
+      if ($("#btnTask")) { $("#btnTask").style.opacity = "0.4"; $("#btnTask").title = "Requires Google Calendar (Settings)"; }
+    }
+  } catch (e) {}
 }
 
 function bindEvents() {
@@ -96,6 +544,11 @@ function bindEvents() {
     }
   }
   $("#lowTouchToggle").addEventListener("click", async () => {
+    // Check if AI is available before enabling
+    if (window._serviceStatus && !window._serviceStatus.hasAI) {
+      alert("Low Touch mode requires an Anthropic API key.\n\nGo to Settings and add your API key first.");
+      return;
+    }
     const cfg = await gideon.lowTouchGet();
     const newState = !cfg.enabled;
     if (newState && !confirm("Enable Low Touch mode? (EXPERIMENTAL)\n\nThis lets AI autonomously:\n• Delete spam\n• Archive newsletters\n• File receipts & notifications\n• Draft replies for your approval\n• Create calendar events from meetings\n• Alert you about deadlines\n• Nudge you about unanswered emails\n\nYou stay in control via action emails on your phone.")) return;
@@ -114,8 +567,16 @@ function bindEvents() {
     $("#btnCheckAll").textContent = "✓";
     $("#btnCheckAll").disabled = false;
   });
+  // Legacy pagination buttons (still work as fallback)
   $("#btnPrev").addEventListener("click", () => { if (currentPage > 0) { currentPage--; loadMessages(); } });
-  $("#btnNext").addEventListener("click", () => { currentPage++; loadMessages(); });
+  $("#btnNext").addEventListener("click", () => { loadMoreMessages(); });
+
+  // Infinite scroll — load more when near bottom of message list
+  $("#messageList").addEventListener("scroll", () => {
+    const el = $("#messageList");
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
+    if (nearBottom) loadMoreMessages();
+  });
 
   // Search
   let searchTimer;
@@ -125,7 +586,7 @@ function bindEvents() {
     searchTimer = setTimeout(() => {
       if (q.length >= 2) searchMail(q);
       else loadMessages();
-    }, 400);
+    }, 800);
   });
 
   // Read pane actions
@@ -990,6 +1451,21 @@ Only output the reply body, no subject line.`,
   $("#cfgAutoLaunch").addEventListener("change", async (e) => {
     await gideon.autolaunchSet(e.target.checked);
   });
+
+  // Active lists — save on change
+  for (const listId of ["Customer", "Vip", "Watch", "Daily", "Blocked", "Muted"]) {
+    $(`#cfgList${listId}`).addEventListener("change", async () => {
+      await gideon.activeListsSet({
+        customer: $("#cfgListCustomer").checked,
+        vip: $("#cfgListVip").checked,
+        watch: $("#cfgListWatch").checked,
+        daily: $("#cfgListDaily").checked,
+        blocked: $("#cfgListBlocked").checked,
+        muted: $("#cfgListMuted").checked,
+      });
+      window._activeLists = await gideon.activeListsGet();
+    });
+  }
   $("#cfgSmsTest").addEventListener("click", async () => {
     $("#cfgSmsResult").textContent = "Sending...";
     await saveSettingsQuiet();
@@ -1087,8 +1563,15 @@ async function loadFolders() {
   }
 }
 
-// ── Message list ────────────────────────────────────────────────────────────
+// ── Message list with infinite scroll ────────────────────────────────────
+let _loadingMore = false;
+let _allLoaded = false;
+let _totalMessages = 0;
+
 async function loadMessages() {
+  currentPage = 0;
+  _allLoaded = false;
+
   let result = currentFolder === "INBOX"
     ? await gideon.fetchInbox(currentPage)
     : await gideon.fetchFolder(currentFolder, currentPage);
@@ -1107,14 +1590,116 @@ async function loadMessages() {
   }
 
   currentMessages = result.messages || [];
-  const total = result.total || 0;
+  _totalMessages = result.total || 0;
 
   renderMessageList();
 
-  // Pagination
-  $("#btnPrev").disabled = currentPage === 0;
-  $("#btnNext").disabled = (currentPage + 1) * 50 >= total;
-  $("#pageInfo").textContent = total > 0 ? `${currentPage * 50 + 1}–${Math.min((currentPage + 1) * 50, total)} of ${total}` : "Empty";
+  // Pagination info
+  $("#btnPrev").disabled = true;
+  $("#btnNext").disabled = true;
+  _updatePageInfo();
+}
+
+async function loadMoreMessages() {
+  if (_loadingMore || _allLoaded) return;
+  if (currentMessages.length >= _totalMessages) { _allLoaded = true; return; }
+
+  _loadingMore = true;
+
+  try {
+    // Load 2 pages (100 emails) at a time for smoother scrolling
+    const allNew = [];
+    for (let i = 0; i < 2; i++) {
+      currentPage++;
+      if ((currentPage) * 50 >= _totalMessages) break;
+
+      const result = currentFolder === "INBOX"
+        ? await gideon.fetchInbox(currentPage)
+        : await gideon.fetchFolder(currentFolder, currentPage);
+
+      const newMsgs = result.messages || [];
+      if (!newMsgs.length) { _allLoaded = true; break; }
+      allNew.push(...newMsgs);
+    }
+
+    if (!allNew.length) { _allLoaded = true; return; }
+
+    // Append to existing messages (avoid duplicates by UID)
+    const existingUids = new Set(currentMessages.map((m) => m.uid));
+    const unique = allNew.filter((m) => !existingUids.has(m.uid));
+    currentMessages = currentMessages.concat(unique);
+
+    // Append to DOM instead of full re-render
+    await renderAppendedMessages(unique);
+    _updatePageInfo();
+  } catch (e) {
+    // revert on failure
+  } finally {
+    _loadingMore = false;
+  }
+}
+
+function _updatePageInfo() {
+  const showing = currentMessages.length;
+  $("#pageInfo").textContent = _totalMessages > 0 ? `${showing} of ${_totalMessages}` : "Empty";
+  $("#btnPrev").disabled = true;
+  $("#btnNext").disabled = _allLoaded || showing >= _totalMessages;
+}
+
+async function renderAppendedMessages(newMsgs) {
+  const list = $("#messageList");
+  let newStatuses = {};
+  try {
+    newStatuses = await gideon.senderStatusBulk(newMsgs) || {};
+  } catch (e) {}
+  // Merge into global
+  Object.assign(senderStatuses, newStatuses);
+
+  for (const m of newMsgs) {
+    const status = senderStatuses[m.from?.address] || null;
+    const div = document.createElement("div");
+    div.className = "msg-row" + (!m.seen ? " unread" : "") + (m.uid === currentUid ? " active" : "");
+
+    if (status === "customer") { div.style.cssText = "background:#d1fae5;color:#111113;border-left:3px solid #10b981"; }
+    else if (status === "whitelist") { div.style.cssText = "background:#f0f0f2;color:#111113;border-left:3px solid #7c6cff"; }
+    else if (status === "watch") { div.style.cssText = "background:#1c1a10;color:#fef3c7;border-left:3px solid #ff9f43"; }
+    else if (status === "blacklist") { div.style.cssText = "background:#1a0a0a;color:#fecaca;border-left:3px solid #f06060"; }
+    else if (status === "greylist") { div.style.cssText = "background:#1a1a1f;color:#7dd3fc;border-left:3px solid #38bdf8"; }
+    else if (status === "daily") { div.style.cssText = "background:#0a1a12;color:#86efac;border-left:3px solid #22c55e"; }
+
+    const subjectColor = status === "customer" ? "color:#111" : status === "whitelist" ? "color:#2a2a32" : status === "watch" ? "color:#fbbf24" : status === "blacklist" ? "color:#fca5a5" : status === "greylist" ? "color:#7dd3fc" : status === "daily" ? "color:#86efac" : "";
+    const fromColor = status === "customer" ? "color:#059669" : status === "whitelist" ? "color:#444" : status === "watch" ? "color:#ff9f43" : status === "greylist" ? "color:#38bdf8" : status === "daily" ? "color:#4ade80" : "";
+    const dateColor = status === "whitelist" ? "color:#666" : "";
+    const badge = status === "customer" ? '<span style="color:#10b981;font-size:10px;font-weight:600">CUSTOMER</span>'
+      : status === "whitelist" ? '<span style="color:#7c6cff;font-size:10px;font-weight:600">VIP</span>'
+      : status === "watch" ? '<span style="color:#ff9f43;font-size:10px">WATCH</span>'
+      : status === "blacklist" ? '<span style="color:#f06060;font-size:10px">BLOCKED</span>'
+      : status === "greylist" ? '<span style="color:#38bdf8;font-size:10px">MUTED</span>'
+      : status === "daily" ? '<span style="color:#4ade80;font-size:10px">DAILY</span>'
+      : "";
+
+    div.innerHTML = `
+      <div class="msg-top">
+        <input type="checkbox" class="msg-checkbox" data-uid="${m.uid}" style="margin-right:4px;cursor:pointer;width:auto;flex:none" ${(window._selectedUids || new Set()).has(m.uid) ? "checked" : ""} />
+        <span class="msg-from" style="${fromColor};flex:1">${escHtml(m.from?.name || m.from?.address || "Unknown")}</span>
+        <span class="msg-date" style="${dateColor}">${formatDate(m.date)}</span>
+      </div>
+      <div class="msg-subject" style="${subjectColor}">${escHtml(m.subject)}</div>
+      <div class="msg-icons">
+        ${m.flagged ? '<span class="star">&#9733;</span>' : ""}
+        ${m.hasAttachments ? '<span class="clip">&#128206;</span>' : ""}
+        ${badge}
+      </div>
+    `;
+    div.querySelector(".msg-checkbox").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const _sel = window._selectedUids || new Set();
+      if (e.target.checked) _sel.add(m.uid); else _sel.delete(m.uid);
+      if (window._updateBulkToolbar) window._updateBulkToolbar();
+    });
+    div.addEventListener("click", (e) => { if (e.target.classList.contains("msg-checkbox")) return; openMessage(m.uid); });
+    list.appendChild(div);
+  }
 }
 
 let senderStatuses = {};
@@ -1134,7 +1719,9 @@ async function renderMessageList() {
     div.className = "msg-row" + (!m.seen ? " unread" : "") + (m.uid === currentUid ? " active" : "");
 
     // Color based on list membership
-    if (status === "whitelist") {
+    if (status === "customer") {
+      div.style.cssText = "background:#d1fae5;color:#111113;border-left:3px solid #10b981";
+    } else if (status === "whitelist") {
       div.style.cssText = "background:#f0f0f2;color:#111113;border-left:3px solid #7c6cff";
     } else if (status === "watch") {
       div.style.cssText = "background:#1c1a10;color:#fef3c7;border-left:3px solid #ff9f43";
@@ -1146,10 +1733,11 @@ async function renderMessageList() {
       div.style.cssText = "background:#0a1a12;color:#86efac;border-left:3px solid #22c55e";
     }
 
-    const subjectColor = status === "whitelist" ? "color:#2a2a32" : status === "watch" ? "color:#fbbf24" : status === "blacklist" ? "color:#fca5a5" : status === "greylist" ? "color:#7dd3fc" : status === "daily" ? "color:#86efac" : "";
-    const fromColor = status === "whitelist" ? "color:#444" : status === "watch" ? "color:#ff9f43" : status === "greylist" ? "color:#38bdf8" : status === "daily" ? "color:#4ade80" : "";
+    const subjectColor = status === "customer" ? "color:#f9a8d4" : status === "whitelist" ? "color:#2a2a32" : status === "watch" ? "color:#fbbf24" : status === "blacklist" ? "color:#fca5a5" : status === "greylist" ? "color:#7dd3fc" : status === "daily" ? "color:#86efac" : "";
+    const fromColor = status === "customer" ? "color:#ec4899" : status === "whitelist" ? "color:#444" : status === "watch" ? "color:#ff9f43" : status === "greylist" ? "color:#38bdf8" : status === "daily" ? "color:#4ade80" : "";
     const dateColor = status === "whitelist" ? "color:#666" : "";
-    const badge = status === "whitelist" ? '<span style="color:#7c6cff;font-size:10px;font-weight:600">VIP</span>'
+    const badge = status === "customer" ? '<span style="color:#ec4899;font-size:10px;font-weight:600">CUSTOMER</span>'
+      : status === "whitelist" ? '<span style="color:#7c6cff;font-size:10px;font-weight:600">VIP</span>'
       : status === "watch" ? '<span style="color:#ff9f43;font-size:10px">WATCH</span>'
       : status === "blacklist" ? '<span style="color:#f06060;font-size:10px">BLOCKED</span>'
       : status === "greylist" ? '<span style="color:#38bdf8;font-size:10px">MUTED</span>'
@@ -1230,8 +1818,8 @@ async function openMessage(uid) {
   const senderAddr = msg.from?.address || "";
   if (senderAddr && senderStatuses[senderAddr]) {
     const s = senderStatuses[senderAddr];
-    const labels = { vip: "VIP", watch: "WATCHING", blocked: "BLOCKED", muted: "MUTED", daily: "DAILY" };
-    const colors = { vip: "#3b82f6", watch: "#f59e0b", blocked: "#ef4444", muted: "#64748b", daily: "#22c55e" };
+    const labels = { customer: "CUSTOMER", vip: "VIP", watch: "WATCHING", blocked: "BLOCKED", muted: "MUTED", daily: "DAILY" };
+    const colors = { customer: "#ec4899", vip: "#3b82f6", watch: "#f59e0b", blocked: "#ef4444", muted: "#64748b", daily: "#22c55e" };
     statusEl.textContent = labels[s] || s;
     statusEl.style.cssText = `font-size:10px;padding:2px 6px;border-radius:3px;background:${colors[s] || "#334155"}22;color:${colors[s] || "#94a3b8"};border:1px solid ${colors[s] || "#334155"}66;font-weight:600`;
   } else {
@@ -1318,14 +1906,26 @@ async function downloadAttachment(uid, filename) {
 }
 
 // ── Search ──────────────────────────────────────────────────────────────────
+let _searchGen = 0;
+
 async function searchMail(query) {
-  const result = await gideon.searchMessages(query);
-  if (result.error) return;
-  currentMessages = result.messages || [];
-  renderMessageList();
-  $("#pageInfo").textContent = `${currentMessages.length} results`;
-  $("#btnPrev").disabled = true;
-  $("#btnNext").disabled = true;
+  const gen = ++_searchGen;
+  $("#pageInfo").textContent = "Searching…";
+  $("#messageList").innerHTML = `<div style="padding:24px;text-align:center;color:#94a3b8">Searching for "${query}"…</div>`;
+  try {
+    const result = await gideon.searchMessages(query);
+    if (gen !== _searchGen) return; // newer search superseded this one
+    if (result.stale || result.error) return;
+    currentMessages = result.messages || [];
+    renderMessageList();
+    $("#pageInfo").textContent = `${currentMessages.length} result${currentMessages.length !== 1 ? "s" : ""}`;
+    $("#btnPrev").disabled = true;
+    $("#btnNext").disabled = true;
+  } catch (e) {
+    if (gen !== _searchGen) return;
+    $("#messageList").innerHTML = `<div style="padding:24px;text-align:center;color:#f06060">Search failed</div>`;
+    $("#pageInfo").textContent = "Search failed";
+  }
 }
 
 // ── Compose ─────────────────────────────────────────────────────────────────
@@ -1479,6 +2079,16 @@ async function openSettings() {
   $("#cfgSmsResult").textContent = "";
   const alState = await gideon.autolaunchGet();
   $("#cfgAutoLaunch").checked = alState.enabled;
+
+  // Active lists
+  const activeLists = await gideon.activeListsGet();
+  window._activeLists = activeLists;
+  $("#cfgListCustomer").checked = activeLists.customer;
+  $("#cfgListVip").checked = activeLists.vip;
+  $("#cfgListWatch").checked = activeLists.watch;
+  $("#cfgListDaily").checked = activeLists.daily;
+  $("#cfgListBlocked").checked = activeLists.blocked;
+  $("#cfgListMuted").checked = activeLists.muted;
   const convoCfg = await gideon.convoGetConfig();
   $("#cfgConvoEnabled").checked = convoCfg.enabled !== false;
   $("#cfgConvoMinReplies").value = convoCfg.minReplies || 2;
@@ -1544,9 +2154,9 @@ async function saveSettings() {
 }
 
 // ── Unified People renderer ─────────────────────────────────────────────
-const ROLE_COLORS = { vip: "#3b82f6", watch: "#f59e0b", blocked: "#ef4444", muted: "#64748b", daily: "#06b6d4" };
-const ROLE_LABELS = { vip: "VIP", watch: "Watch", blocked: "Blocked", muted: "Muted", daily: "Daily Update" };
-const ROLE_DESC = { vip: "Always texts you", watch: "AI analyzes + actions", blocked: "Dark red, auto-deletes in 7 days", muted: "Grey, no notifications", daily: "Summarized in morning briefing" };
+const ROLE_COLORS = { customer: "#ec4899", vip: "#3b82f6", watch: "#f59e0b", blocked: "#ef4444", muted: "#64748b", daily: "#06b6d4" };
+const ROLE_LABELS = { customer: "Customer", vip: "VIP", watch: "Watch", blocked: "Blocked", muted: "Muted", daily: "Daily Update" };
+const ROLE_DESC = { customer: "Deep AI analysis, item tracking, calendar", vip: "Always texts you", watch: "AI analyzes + actions", blocked: "Dark red, auto-deletes in 7 days", muted: "Grey, no notifications", daily: "Summarized in morning briefing" };
 
 async function renderPeople() {
   const people = await gideon.peopleGetAll();
@@ -1560,10 +2170,14 @@ async function renderPeople() {
   }
 
   // Group by role for visual clarity
-  const groups = { vip: [], watch: [], daily: [], blocked: [], muted: [] };
+  const al = window._activeLists || { customer: false, vip: true, watch: true, daily: true, blocked: true, muted: true };
+  const groups = { customer: [], vip: [], watch: [], daily: [], blocked: [], muted: [] };
   for (const p of people) groups[p.role]?.push(p);
 
-  for (const role of ["vip", "watch", "daily", "blocked", "muted"]) {
+  for (const role of ["customer", "vip", "watch", "daily", "blocked", "muted"]) {
+    // Skip disabled lists (except show if items already exist in them)
+    const roleKey = role === "vip" ? "vip" : role;
+    if (!al[roleKey] && !groups[role].length) continue;
     const items = groups[role];
     if (!items.length) continue;
 
@@ -1591,7 +2205,7 @@ async function renderPeople() {
       // Role dropdown (change role inline)
       const roleSel = document.createElement("select");
       roleSel.style.cssText = "padding:2px 4px;background:var(--bg2);border:1px solid var(--bg3);border-radius:3px;color:var(--fg);font-size:10px;cursor:pointer";
-      for (const r of ["vip", "watch", "daily", "blocked", "muted"]) {
+      for (const r of ["customer", "vip", "watch", "daily", "blocked", "muted"].filter(r => al[r] || r === role)) {
         const opt = document.createElement("option");
         opt.value = r; opt.textContent = ROLE_LABELS[r];
         if (r === role) opt.selected = true;
@@ -2076,6 +2690,17 @@ let lastUserMessage = "";
 function toggleAI() {
   aiOpen = !aiOpen;
   $("#aiPanel").style.display = aiOpen ? "flex" : "none";
+  // Show notice if no AI key
+  if (aiOpen && window._serviceStatus && !window._serviceStatus.hasAI) {
+    const existing = document.getElementById("aiNoKeyBanner");
+    if (!existing) {
+      const banner = document.createElement("div");
+      banner.id = "aiNoKeyBanner";
+      banner.style.cssText = "padding:8px 12px;background:#1a1a0a;border:1px solid #f59e0b33;border-radius:6px;margin:8px;font-size:11px;color:#f59e0b";
+      banner.textContent = "AI features require an Anthropic API key. Add one in Settings to enable triage, analysis, drafting, and chat.";
+      $("#aiMessages").parentNode.insertBefore(banner, $("#aiMessages"));
+    }
+  }
 }
 
 function addAIMessage(text, role) {
