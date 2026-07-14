@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2 — 2026-07-14
+
+- Message list keeps your scroll position when you open an email and go back to the list (was resetting to the top on every open, star, and background inbox refresh)
+- Fixed a re-render race that could duplicate list rows or jump the scroll when a background inbox update landed mid-action
+- Fixed spurious page loads triggered by list re-renders (empty list falsely tripping infinite scroll)
+- Opening a message while a slower one is still loading no longer shows the wrong message in the read pane
+
 ## 0.4.1 — 2026-07-04
 
 - Calendar candidate labels click through to the source email

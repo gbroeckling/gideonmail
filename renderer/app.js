@@ -1592,7 +1592,8 @@ async function loadMessages() {
   currentMessages = result.messages || [];
   _totalMessages = result.total || 0;
 
-  renderMessageList();
+  await renderMessageList();
+  $("#messageList").scrollTop = 0; // fresh folder/refresh always starts at top
 
   // Pagination info
   $("#btnPrev").disabled = true;
@@ -1648,10 +1649,12 @@ function _updatePageInfo() {
 
 async function renderAppendedMessages(newMsgs) {
   const list = $("#messageList");
+  const gen = _listRenderGen;
   let newStatuses = {};
   try {
     newStatuses = await gideon.senderStatusBulk(newMsgs) || {};
   } catch (e) {}
+  if (gen !== _listRenderGen) return; // a full re-render superseded this append (it already includes these rows)
   // Merge into global
   Object.assign(senderStatuses, newStatuses);
 
@@ -1703,15 +1706,20 @@ async function renderAppendedMessages(newMsgs) {
 }
 
 let senderStatuses = {};
+let _listRenderGen = 0; // serializes concurrent list renders (star, inbox push, search)
 
 async function renderMessageList() {
   const list = $("#messageList");
-  list.innerHTML = "";
+  const prevScroll = list.scrollTop; // preserve position across re-renders (inbox updates, star, etc.)
+  const gen = ++_listRenderGen;
 
-  // Bulk fetch sender list statuses for coloring
+  // Bulk fetch sender list statuses for coloring — BEFORE clearing the list: an empty
+  // list mid-await resets scroll to 0 and falsely triggers the infinite-scroll handler
   try {
     senderStatuses = await gideon.senderStatusBulk(currentMessages) || {};
   } catch (e) { senderStatuses = {}; }
+  if (gen !== _listRenderGen) return; // superseded by a newer render
+  list.innerHTML = "";
 
   for (const m of currentMessages) {
     const status = senderStatuses[m.from?.address] || null;
@@ -1778,18 +1786,22 @@ async function renderMessageList() {
 
     list.appendChild(div);
   }
+  list.scrollTop = prevScroll;
 }
 
 // ── Read message ────────────────────────────────────────────────────────────
 async function openMessage(uid) {
   currentUid = uid;
-  renderMessageList(); // highlight active
+  // Highlight active row in place — a full re-render resets the list scroll position
+  $("#messageList").querySelectorAll(".msg-row.active").forEach((el) => el.classList.remove("active"));
+  $("#messageList").querySelector(`.msg-checkbox[data-uid="${uid}"]`)?.closest(".msg-row")?.classList.add("active");
 
   $("#readPlaceholder").style.display = "none";
   $("#readContent").style.display = "flex";
   $("#readHeader").innerHTML = `<div style="color:var(--fg2);font-size:12px">Loading...</div>`;
 
   const msg = await gideon.fetchMessage(uid, currentFolder);
+  if (uid !== currentUid) return; // user opened a different message while this one loaded
   if (msg.error) {
     $("#readHeader").innerHTML = `<div style="color:var(--danger)">${escHtml(msg.error)}</div>`;
     return;
@@ -1797,9 +1809,12 @@ async function openMessage(uid) {
 
   currentMsg = msg;
 
-  // Mark as read in list
+  // Mark as read in list (in place, to keep scroll position)
   const listMsg = currentMessages.find((m) => m.uid === uid);
-  if (listMsg) { listMsg.seen = true; renderMessageList(); }
+  if (listMsg) {
+    listMsg.seen = true;
+    $("#messageList").querySelector(`.msg-checkbox[data-uid="${uid}"]`)?.closest(".msg-row")?.classList.remove("unread");
+  }
 
   // Header
   $("#readHeader").innerHTML = `
