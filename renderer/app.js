@@ -503,11 +503,11 @@ function bindEvents() {
       if (res.text) {
         // Show in AI panel
         $("#aiPanel").style.display = "flex";
-        let html = `<strong style="color:#a78bfa">Inbox Summary</strong><br>${res.text.replace(/\n/g, "<br>")}`;
+        let html = `<strong style="color:#a78bfa">Inbox Summary</strong><br>${escHtml(res.text).replace(/\n/g, "<br>")}`;
         if (res.recommendations?.length) {
           html += `<br><br><strong style="color:#f59e0b">AI Recommendations (${res.recommendations.length}):</strong>`;
           for (const r of res.recommendations) {
-            html += `<br><span style="color:#8b8b96">${r.from?.name || r.from?.address}:</span> <span style="color:#a78bfa">${r.suggestedAction}</span> — ${r.recommendation}`;
+            html += `<br><span style="color:#8b8b96">${escHtml(r.from?.name || r.from?.address)}:</span> <span style="color:#a78bfa">${escHtml(r.suggestedAction)}</span> — ${escHtml(r.recommendation)}`;
           }
           html += `<br><br><span style="font-size:10px;color:#55555e">Summary + recommendations sent to your action email for one-tap execution.</span>`;
         }
@@ -519,7 +519,7 @@ function bindEvents() {
       } else if (res.error) {
         const div = document.createElement("div");
         div.className = "ai-msg assistant";
-        div.innerHTML = `<span style="color:var(--danger)">${res.error}</span>`;
+        div.innerHTML = `<span style="color:var(--danger)">${escHtml(res.error)}</span>`;
         $("#aiMessages").appendChild(div);
       }
     } catch (e) {}
@@ -1097,7 +1097,7 @@ Only output the reply body, no subject line.`,
     const matches = acPeople.filter((p) => p.address?.includes(val) || p.name?.toLowerCase().includes(val)).slice(0, 8);
     if (!matches.length) { dropdown.style.display = "none"; return; }
     dropdown.innerHTML = matches.map((p) =>
-      `<div class="ac-item" style="padding:6px 10px;cursor:pointer;font-size:11px;border-bottom:1px solid var(--border);color:var(--fg)" data-addr="${p.address}">
+      `<div class="ac-item" style="padding:6px 10px;cursor:pointer;font-size:11px;border-bottom:1px solid var(--border);color:var(--fg)" data-addr="${escHtml(p.address)}">
         <span style="font-weight:600">${escHtml(p.name || p.address)}</span>
         ${p.name ? `<span style="color:var(--fg2);margin-left:4px">${escHtml(p.address)}</span>` : ""}
       </div>`
@@ -1963,7 +1963,7 @@ function openCompose(mode) {
     $("#composeSubject").value = currentMsg.subject?.startsWith("Re:") ? currentMsg.subject : `Re: ${currentMsg.subject}`;
     $("#composeEditor").innerHTML = `<br><br><blockquote style="border-left:3px solid #cbd5e1;padding-left:12px;color:#64748b">
       On ${formatDateFull(currentMsg.date)}, ${escHtml(currentMsg.from?.name || currentMsg.from?.address || "")} wrote:<br>
-      ${currentMsg.html || escHtml(currentMsg.text || "")}
+      ${sanitizeEmailHtml(currentMsg.html) || escHtml(currentMsg.text || "")}
     </blockquote>`;
   } else if (mode === "replyall" && currentMsg) {
     $("#composeTitle").textContent = "Reply All";
@@ -1976,7 +1976,7 @@ function openCompose(mode) {
     $("#composeSubject").value = currentMsg.subject?.startsWith("Re:") ? currentMsg.subject : `Re: ${currentMsg.subject}`;
     $("#composeEditor").innerHTML = `<br><br><blockquote style="border-left:3px solid #cbd5e1;padding-left:12px;color:#64748b">
       On ${formatDateFull(currentMsg.date)}, ${escHtml(currentMsg.from?.name || currentMsg.from?.address || "")} wrote:<br>
-      ${currentMsg.html || escHtml(currentMsg.text || "")}
+      ${sanitizeEmailHtml(currentMsg.html) || escHtml(currentMsg.text || "")}
     </blockquote>`;
   } else if (mode === "forward" && currentMsg) {
     $("#composeTitle").textContent = "Forward";
@@ -1987,7 +1987,7 @@ function openCompose(mode) {
       From: ${escHtml(currentMsg.from?.name || "")} &lt;${escHtml(currentMsg.from?.address || "")}&gt;<br>
       Date: ${formatDateFull(currentMsg.date)}<br>
       Subject: ${escHtml(currentMsg.subject || "")}<br><br>
-      ${currentMsg.html || escHtml(currentMsg.text || "")}`;
+      ${sanitizeEmailHtml(currentMsg.html) || escHtml(currentMsg.text || "")}`;
   }
 
   $("#composeTo").focus();
@@ -2215,8 +2215,8 @@ async function renderPeople() {
       // Info
       const info = document.createElement("div");
       info.style.cssText = `flex:1;min-width:0;${item.enabled ? "" : "text-decoration:line-through;opacity:0.5"}`;
-      info.innerHTML = `<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.name || item.address}</div>` +
-        (item.name ? `<div style="font-size:10px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis">${item.address}</div>` : "");
+      info.innerHTML = `<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(item.name || item.address)}</div>` +
+        (item.name ? `<div style="font-size:10px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis">${escHtml(item.address)}</div>` : "");
 
       // Role dropdown (change role inline)
       const roleSel = document.createElement("select");
@@ -2307,8 +2307,8 @@ async function renderWatchlist() {
 
     const info = document.createElement("div");
     info.style.cssText = `flex:1;${item.enabled ? "" : "text-decoration:line-through;color:var(--fg2)"}`;
-    info.innerHTML = `<div style="font-weight:600;font-size:12px">${item.name || item.address}</div>` +
-      (item.name ? `<div style="font-size:10px;color:var(--fg2)">${item.address}</div>` : "");
+    info.innerHTML = `<div style="font-weight:600;font-size:12px">${escHtml(item.name || item.address)}</div>` +
+      (item.name ? `<div style="font-size:10px;color:var(--fg2)">${escHtml(item.address)}</div>` : "");
 
     const editBtn = document.createElement("button");
     editBtn.style.cssText = "background:none;border:1px solid var(--bg3);color:var(--fg2);cursor:pointer;font-size:10px;padding:1px 6px;border-radius:3px";
@@ -3014,6 +3014,27 @@ function bindAIEvents() {
 function escHtml(s) {
   if (!s) return "";
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// Sanitize untrusted email HTML before it enters the privileged main document
+// (compose quote/forward). The read pane is a sandboxed iframe, but the compose
+// editor is not — raw email HTML here means script access to the gideon bridge.
+function sanitizeEmailHtml(html) {
+  if (!html) return "";
+  const doc = new DOMParser().parseFromString(html, "text/html"); // inert — nothing executes during parse
+  doc.querySelectorAll("script, iframe, object, embed, link, meta, base, form").forEach((el) => el.remove());
+  for (const el of doc.querySelectorAll("*")) {
+    for (const attr of [...el.attributes]) {
+      const n = attr.name.toLowerCase();
+      const v = (attr.value || "").trim().toLowerCase();
+      if (n.startsWith("on") || n === "srcdoc") el.removeAttribute(attr.name);
+      else if ((n === "href" || n === "src" || n === "xlink:href") &&
+               (v.startsWith("javascript:") || v.startsWith("vbscript:") || (v.startsWith("data:") && !v.startsWith("data:image/")))) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  }
+  return doc.body.innerHTML;
 }
 
 function formatDate(iso) {

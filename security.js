@@ -151,14 +151,15 @@ async function checkSpamhaus(ip) {
     const reversed = ip.split(".").reverse().join(".");
     const lookup = `${reversed}.zen.spamhaus.org`;
     const addresses = await dns.resolve4(lookup);
-    // Any result means the IP is listed
-    const zones = addresses.map((a) => {
-      if (a.startsWith("127.0.0.2")) return "SBL (spam)";
-      if (a.startsWith("127.0.0.3")) return "SBL-CSS (spam)";
-      if (a.startsWith("127.0.0.4") || a.startsWith("127.0.0.5") || a.startsWith("127.0.0.6") || a.startsWith("127.0.0.7")) return "XBL (exploit)";
-      if (a.startsWith("127.0.0.10") || a.startsWith("127.0.0.11")) return "PBL (policy)";
-      return a;
-    });
+    // ONLY 127.0.0.2-11 mean "listed". Spamhaus returns 127.255.255.x error codes
+    // (public resolver blocked, query limit) — treating those as listed would score
+    // +5 on EVERY email and mass-delete legitimate mail the moment DNS starts working.
+    const zoneMap = { 2: "SBL (spam)", 3: "SBL-CSS (spam)", 4: "XBL (exploit)", 5: "XBL (exploit)", 6: "XBL (exploit)", 7: "XBL (exploit)", 10: "PBL (policy)", 11: "PBL (policy)" };
+    const zones = addresses
+      .map((a) => a.match(/^127\.0\.0\.(\d+)$/))
+      .filter((m) => m && zoneMap[Number(m[1])])
+      .map((m) => zoneMap[Number(m[1])]);
+    if (!zones.length) return { listed: false, details: "" }; // error/unknown return code — fail clean
     return { listed: true, details: `Spamhaus: ${ip} listed in ${zones.join(", ")}` };
   } catch (e) {
     // NXDOMAIN = not listed (good)

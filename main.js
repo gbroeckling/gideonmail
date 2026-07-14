@@ -844,7 +844,10 @@ async function sendSMS(message) {
         let body = "";
         res.on("data", (d) => { body += d; });
         res.on("end", () => {
-          const r = JSON.parse(body);
+          // A malformed response must reject, never throw — an unsettled promise here
+          // hangs the awaiting caller and latches _lowTouchRunning, killing all filtering
+          let r;
+          try { r = JSON.parse(body); } catch (e) { return reject(new Error(`SMS gateway returned non-JSON (HTTP ${res.statusCode})`)); }
           if (r.success) { _smsSentHour++; _smsSentToday++; resolve(r); }
           else reject(new Error(r.error || "SMS send failed"));
         });
@@ -1907,6 +1910,84 @@ async function _spamSafeguardCheck(msg, headers) {
   return { safe: true };
 }
 
+// Heuristic spam check — pure local regexes, no AI, no network. Shared by the
+// full Low Touch cycle and the 5-minute fast pass.
+function _heuristicSpamCheck(msg) {
+  const subj = (msg.subject || "").toLowerCase();
+  const fromName = (msg.from?.name || "").toLowerCase();
+  const fromAddr = (msg.from?.address || "").toLowerCase();
+  const domain = fromAddr.includes("@") ? fromAddr.split("@")[1] : "";
+
+  // Japanese/Chinese phishing (fake postal, DHL, customs, Amazon.co.jp account theft)
+  const jpPhish = /(日本郵便|ヤマト運輸|佐川急便|税関|配達.*通知|不在.*通知|アカウント.*盗|アカウント.*危険|ご注文のキャンセル.*アカウント)/i;
+  if (jpPhish.test(msg.subject || "") || jpPhish.test(fromName)) {
+    // Check domain — real Japan Post is japanpost.jp, real Amazon is amazon.co.jp
+    const realJpDomains = ["japanpost.jp", "amazon.co.jp", "kuronekoyamato.co.jp", "sagawa-exp.co.jp"];
+    if (!realJpDomains.some(d => domain === d || domain.endsWith("." + d))) {
+      return { spam: true, reason: "japanese_phishing" };
+    }
+  }
+
+  // Health/supplement scams
+  if (/(nail\s*fungus|belly\s*fat|weight\s*loss\s*miracle|erectile|viagra|cialis|enlargement\s*pill|diet\s*pill|keto\s*burn|cbd\s*gummies|blood\s*sugar\s*trick)/i.test(subj)) {
+    return { spam: true, reason: "health_scam" };
+  }
+
+  // Clickbait/shock spam
+  if (/(shocking|shocks?\s*the\s*world|you\s*won.t\s*believe|doctors?\s*(?:hate|don.t\s*want)|one\s*weird\s*trick|transformation.*older|used\s*to\s*look.*years?\s*older)/i.test(subj)) {
+    return { spam: true, reason: "clickbait_spam" };
+  }
+
+  // Nigerian prince / lottery / inheritance
+  if (/(nigerian?\s*prince|lottery\s*winner|you\s*won\s*million|inheritance\s*fund|claim\s*your?\s*prize|selected\s*as\s*winner|lucky\s*winner)/i.test(subj)) {
+    return { spam: true, reason: "classic_scam" };
+  }
+
+  // Sextortion / blackmail
+  if (/(recorded\s*you|webcam\s*hack|bitcoin\s*ransom|sextortion|i\s*have\s*your\s*video)/i.test(subj)) {
+    return { spam: true, reason: "sextortion" };
+  }
+
+  // Suspicious TLD with spam keywords
+  const suspiciousTld = /\.(cn|xyz|top|buzz|icu|club|wang|work|site|online|store|fun|space|click|link|shop|tk|ml|ga|cf|gq)$/;
+  if (suspiciousTld.test(domain) && /(free|winner|prize|offer|discount|deal|urgent|verify|confirm|suspended)/i.test(subj)) {
+    return { spam: true, reason: "suspicious_tld_spam" };
+  }
+
+  return { spam: false, reason: "" };
+}
+
+// Cheap no-AI spam pass for the 5-minute fast cycle — kills only high-confidence
+// heuristic matches so obvious spam doesn't sit in the inbox until the 2h full cycle.
+async function fastSpamPass(messages) {
+  if (store.get("low_touch_enabled") !== true) return;
+  const processedKey = "low_touch_processed";
+  const processed = new Set(store.get(processedKey) || []);
+  let dirty = false;
+  for (const msg of messages) {
+    if (msg.seen || processed.has(msg.uid)) continue;
+    const subj = (msg.subject || "").toLowerCase();
+    if (subj.includes("[action:") || subj.includes("[gideon-action:")) continue;
+    if (_senderListStatus(msg.from?.address, msg.from?.name)) continue; // listed senders belong to normal triage
+    const verdict = _heuristicSpamCheck(msg);
+    if (!verdict.spam) continue;
+    console.log(`Fast pass HEURISTIC SPAM (${verdict.reason}): ${msg.from?.address} "${msg.subject}"`);
+    try { await deleteMessage(msg.uid); } catch (e) {
+      logToFile(`WARN fast-pass delete failed (${e.message}), will retry: ${msg.from?.address} "${msg.subject}"`);
+      continue; // not marked processed — retried next pass / full cycle
+    }
+    bayesianFilter.train(`${msg.text || ""} ${msg.subject || ""}`, true);
+    _logAutoAction("heuristic-spam-delete", msg.from?.address, "deleted", `Fast pass: ${verdict.reason}: "${msg.subject}"`);
+    _trackAutoHandledAction(msg.uid, "deleted_spam", `Spam: ${verdict.reason}`);
+    processed.add(msg.uid);
+    dirty = true;
+  }
+  if (dirty) {
+    const arr = [...processed]; if (arr.length > 200) arr.splice(0, arr.length - 200);
+    store.set(processedKey, arr);
+  }
+}
+
 let _lowTouchRunning = false;
 async function lowTouchProcess(messages) {
   if (store.get("low_touch_enabled") !== true) return;
@@ -1959,6 +2040,10 @@ async function lowTouchProcess(messages) {
             const chunks = []; for await (const c of raw.content) chunks.push(c);
             const parsed = await simpleParser(Buffer.concat(chunks));
             headers = parsed.headers ? Object.fromEntries(parsed.headers) : {};
+            // Keep the parsed body on the message — envelope objects carry no text/html,
+            // which starved the URL filters and reduced Bayesian to subject-only training
+            if (!msg.text) msg.text = parsed.text || "";
+            if (!msg.html) msg.html = typeof parsed.html === "string" ? parsed.html : "";
           }
         } finally { lock.release(); }
       } finally { try { await freshClient.logout(); } catch (e) {} }
@@ -1991,59 +2076,16 @@ async function lowTouchProcess(messages) {
   // ── Pre-AI heuristic spam filter — catches obvious spam the AI misses ──
   const heuristicFiltered = [];
   for (const msg of spamFiltered) {
-    const subj = (msg.subject || "").toLowerCase();
-    const fromName = (msg.from?.name || "").toLowerCase();
     const fromAddr = (msg.from?.address || "").toLowerCase();
-    const domain = fromAddr.includes("@") ? fromAddr.split("@")[1] : "";
-
-    let heuristicSpam = false;
-    let heuristicReason = "";
-
-    // Japanese/Chinese phishing (fake postal, DHL, customs, Amazon.co.jp account theft)
-    const jpPhish = /(日本郵便|ヤマト運輸|佐川急便|税関|配達.*通知|不在.*通知|アカウント.*盗|アカウント.*危険|ご注文のキャンセル.*アカウント)/i;
-    if (jpPhish.test(msg.subject || "") || jpPhish.test(fromName)) {
-      // Check domain — real Japan Post is japanpost.jp, real Amazon is amazon.co.jp
-      const realJpDomains = ["japanpost.jp", "amazon.co.jp", "kuronekoyamato.co.jp", "sagawa-exp.co.jp"];
-      if (!realJpDomains.some(d => domain === d || domain.endsWith("." + d))) {
-        heuristicSpam = true;
-        heuristicReason = "japanese_phishing";
-      }
-    }
-
-    // Health/supplement scams
-    if (/(nail\s*fungus|belly\s*fat|weight\s*loss\s*miracle|erectile|viagra|cialis|enlargement\s*pill|diet\s*pill|keto\s*burn|cbd\s*gummies|blood\s*sugar\s*trick)/i.test(subj)) {
-      heuristicSpam = true; heuristicReason = "health_scam";
-    }
-
-    // Clickbait/shock spam
-    if (/(shocking|shocks?\s*the\s*world|you\s*won.t\s*believe|doctors?\s*(?:hate|don.t\s*want)|one\s*weird\s*trick|transformation.*older|used\s*to\s*look.*years?\s*older)/i.test(subj)) {
-      heuristicSpam = true; heuristicReason = "clickbait_spam";
-    }
-
-    // Nigerian prince / lottery / inheritance
-    if (/(nigerian?\s*prince|lottery\s*winner|you\s*won\s*million|inheritance\s*fund|claim\s*your?\s*prize|selected\s*as\s*winner|lucky\s*winner)/i.test(subj)) {
-      heuristicSpam = true; heuristicReason = "classic_scam";
-    }
-
-    // Sextortion / blackmail
-    if (/(recorded\s*you|webcam\s*hack|bitcoin\s*ransom|sextortion|i\s*have\s*your\s*video)/i.test(subj)) {
-      heuristicSpam = true; heuristicReason = "sextortion";
-    }
-
-    // Suspicious TLD with spam keywords
-    const suspiciousTld = /\.(cn|xyz|top|buzz|icu|club|wang|work|site|online|store|fun|space|click|link|shop|tk|ml|ga|cf|gq)$/;
-    if (suspiciousTld.test(domain) && /(free|winner|prize|offer|discount|deal|urgent|verify|confirm|suspended)/i.test(subj)) {
-      heuristicSpam = true; heuristicReason = "suspicious_tld_spam";
-    }
-
-    if (heuristicSpam) {
-      console.log(`Low Touch HEURISTIC SPAM (${heuristicReason}): ${fromAddr} "${msg.subject}"`);
+    const verdict = _heuristicSpamCheck(msg);
+    if (verdict.spam) {
+      console.log(`Low Touch HEURISTIC SPAM (${verdict.reason}): ${fromAddr} "${msg.subject}"`);
       try { await deleteMessage(msg.uid); } catch (e) {}
       bayesianFilter.train(`${msg.text || ""} ${msg.subject || ""}`, true);
-      _logAutoAction("heuristic-spam-delete", fromAddr, "deleted", `Heuristic: ${heuristicReason}: "${msg.subject}"`);
+      _logAutoAction("heuristic-spam-delete", fromAddr, "deleted", `Heuristic: ${verdict.reason}: "${msg.subject}"`);
       processed.add(msg.uid);
       // Track the action taken for the digest
-      _trackAutoHandledAction(msg.uid, "deleted_spam", `Spam: ${heuristicReason}`);
+      _trackAutoHandledAction(msg.uid, "deleted_spam", `Spam: ${verdict.reason}`);
     } else {
       heuristicFiltered.push(msg);
     }
@@ -2569,6 +2611,7 @@ ipcMain.handle("commitments-fulfill", (_, id) => {
 async function autoTriageNewMail(messages) {
   // Use persistent tracking — survives app restarts
   const sentUids = _getSmsSentUids();
+  const smsTo = store.get("sms_to"); // must be declared before the watch-list block below — reading it earlier threw a TDZ ReferenceError that killed all watch actions
   const lookbackHours = store.get("sms_history_hours") || 4;
   const cutoff = new Date(Date.now() - lookbackHours * 3600000).toISOString();
 
@@ -2784,7 +2827,6 @@ async function autoTriageNewMail(messages) {
   }
 
   // ── Customer check (highest priority — deep AI analysis + item tracking) ──
-  const smsTo = store.get("sms_to");
   const customerList = (store.get("customer_list") || []).filter((c) => c.enabled);
   if (customerList.length > 0 && store.get("anthropic_api_key")) {
     for (const msg of smsEligible) {
@@ -3343,6 +3385,7 @@ async function startIdle() {
         mainWindow?.webContents?.send("inbox-updated", result);
         // Quick VIP/Watch check only (no full triage)
         const msgs = result.messages || [];
+        await fastSpamPass(msgs); // cheap heuristic kills — obvious spam dies in ≤5 min instead of ≤2h
         const sentUids = _getSmsSentUids();
         const newUnread = msgs.filter((m) => !m.seen && !sentUids.has(m.uid));
         if (newUnread.length > 0) {
@@ -3401,6 +3444,9 @@ ipcMain.handle("save-account", async (_, cfg) => {
     try { await imapClient.logout(); } catch (e) {}
     imapClient = null;
   }
+
+  // First-time setup: start the automation loops without requiring an app restart
+  if (!idleActive) startIdle().catch((e) => logToFile(`WARN startIdle after save-account: ${e.message}`));
 
   return { ok: true };
 });
@@ -4037,7 +4083,8 @@ ipcMain.handle("sms-test", async (_, msg) => {
         let body = "";
         res.on("data", (d) => { body += d; });
         res.on("end", () => {
-          const r = JSON.parse(body);
+          let r;
+          try { r = JSON.parse(body); } catch (e) { return reject(new Error(`SMS gateway returned non-JSON (HTTP ${res.statusCode})`)); }
           if (r.success) resolve(r);
           else reject(new Error(r.error || "SMS failed"));
         });
@@ -6119,13 +6166,19 @@ app.whenReady().then(() => {
   createWindow();
   createTray();
 
-  // Auto-connect if account is configured
-  if (store.get("account")) {
-    fetchInbox().then((result) => {
+  // Auto-connect if account is configured. Retry until startIdle succeeds — a flaky
+  // network at launch previously left all automation (spam filtering, cleanup) dead
+  // for the whole session because startIdle was attempted exactly once.
+  const tryStartIdle = async () => {
+    if (idleActive || !store.get("account")) return;
+    try {
+      const result = await fetchInbox();
       mainWindow?.webContents?.send("inbox-updated", result);
-      startIdle();
-    }).catch(() => {});
-  }
+      await startIdle();
+    } catch (e) { logToFile(`WARN startIdle attempt failed, will retry: ${e.message}`); }
+    if (!idleActive) setTimeout(tryStartIdle, 120000); // retry every 2 min until running
+  };
+  tryStartIdle();
 
   // Morning briefing + smart digest + commitment check every 15 min
   setInterval(() => {

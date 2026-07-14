@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.3 — 2026-07-14
+
+### Spam filtering
+- High-confidence spam now dies within 5 minutes: the heuristic filters (phishing, health scams, sextortion, suspicious TLDs) run on the 5-minute fast cycle instead of waiting for the 2-hour full pass (no extra AI cost)
+- Security scan and Bayesian training now see the full message body (was subject-only — the parsed body was downloaded then discarded)
+- Spamhaus error codes are no longer treated as "listed" (would have mass-deleted legitimate mail if DNS resolution ever started working)
+
+### Reliability
+- A malformed SMS-gateway response can no longer silently hang the whole Low Touch pipeline until restart
+- App now retries the automation startup every 2 minutes if the first attempt fails (a flaky network at launch used to disable all filtering for the session); saving account settings starts it immediately
+- Fixed a variable-ordering crash that silently killed ALL Watch-list actions (SMS alerts, auto-calendar, flag-important)
+
+### Security
+- Reply/Reply-All/Forward now sanitize the quoted email HTML (scripts, event handlers, javascript: URLs stripped) — a crafted email could previously run code in the app on Reply
+- Inbox Summary, People, and Watch-list panels now escape sender-controlled names/addresses
+
 ## 0.4.2 — 2026-07-14
 
 - Message list keeps your scroll position when you open an email and go back to the list (was resetting to the top on every open, star, and background inbox refresh)
